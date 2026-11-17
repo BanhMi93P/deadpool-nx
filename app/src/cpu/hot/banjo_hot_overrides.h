@@ -683,6 +683,10 @@ inline void LogOnce(bool active) {
 
 }  // namespace banjo::hand::n_82D60CB8
 
+namespace banjo::hot::n_82D60CB8 {
+void Native(PPCContext& ctx, uint8_t* base);
+}
+
 namespace banjo::hot {
 
 template <>
