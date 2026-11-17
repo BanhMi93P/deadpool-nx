@@ -213,11 +213,11 @@ struct RecompilerConfig {
   bool vupkd3dExact = false;
   bool fpscrMovesExact = false;
   bool extraInstructions = false;
-  // renut-ultimate (2026-11-16, port 144; tw2de_nx's, ON by default at the user's word: "port the speed ups as on by
-  // default"): spin_hint_yield: the Xenon's spin-wait hints (db16cyc, or r1,r1,r1) call rex_spin_hint
+  // renut-ultimate (2026-11-16, port 144; tw2de_nx's, OFF by default for UE3 spinlock efficiency):
+  // spin_hint_yield: the Xenon's spin-wait hints (db16cyc, or r1,r1,r1) call rex_spin_hint
   // (rex/ppc/context.h), which yields the core (the base's MaybeYield, with its backoff); they were nothing. false in
   // the game's codegen toml: nothing, as before.
-  bool spinHintYield = true;
+  bool spinHintYield = false;
   // renut-ultimate (2026-11-16, port 144; tw2de_nx's, off by default): the console's own results where the host's
   // differ (rex/ppc/vmx_est360.h). vmx_360_estimates: vrefp, vrsqrtefp, vexptefp, vlogefp, fres and frsqrte from
   // the hardware's tables (Xenia's and xenia-edge's; the default is the exact division, square root, polynomial and

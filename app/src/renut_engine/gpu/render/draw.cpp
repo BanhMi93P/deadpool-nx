@@ -118,8 +118,8 @@ REXCVAR_DEFINE_BOOL(banjo_renut_stream_mask, true, "Banjo/Enhancements",
 REXCVAR_DEFINE_BOOL(banjo_renut_texture_defaults_copy, true, "Banjo/Enhancements",
                     "Renut's renderer: a draw's default texture and sampler words are one copy of a block made once")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-// renut-ultimate (2026-11-16, port 145; tw2de_nx's seen19, ON at the user's word: "port the speed ups as on by default"): RedeemQuietStream below.
-REXCVAR_DEFINE_BOOL(banjo_renut_stream_redeem, true, "Banjo/Renut",
+// renut-ultimate (2026-11-16, port 145; tw2de_nx's seen19, OFF by default for UE3 vertex safety): RedeemQuietStream below.
+REXCVAR_DEFINE_BOOL(banjo_renut_stream_redeem, false, "Banjo/Renut",
                     "tw2de_nx (exact): a vertex stream that turned dynamic (rewritten 3 times) becomes cacheable again "
                     "after 60 conversions in a row found its memory unwritten (the store cards): it then takes the usual "
                     "way to a cached copy. tw2de_nx: 7-7.7 ms of render thread a frame converting streams the game had "

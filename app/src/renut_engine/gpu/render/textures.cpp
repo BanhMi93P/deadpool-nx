@@ -113,16 +113,15 @@ REXCVAR_DEFINE_INT32(sasrt_texture_long_idle_frames, 0, "SASRT/Graphics",
                      "before. KNOWN TO HANG THE GPU on the Switch (SASRT, 1800): leave 0")
     .range(0, 1000000)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-// renut-ultimate (2026-11-16, port 145; tw2de_nx's of 2026-11-13, ON at the user's word: "port the speed ups as on by
-// default"): UploadDirtyRowsLocked.
-REXCVAR_DEFINE_BOOL(banjo_renut_dynamic_texture_rows, true, "Banjo/Renut",
+// renut-ultimate (2026-11-16, port 145; tw2de_nx's of 2026-11-13, OFF by default for UE3 streaming safety).
+REXCVAR_DEFINE_BOOL(banjo_renut_dynamic_texture_rows, false, "Banjo/Renut",
                     "tw2de_nx (exact): a CPU-written (linear, dynamic) texture is uploaded only in the rows whose memory "
                     "pages were written since its last upload (the store cards), not whole every frame (tw2de_nx: two "
                     "768x256 RGBA32F textures written in turn, 3 MB a frame read, swapped and uploaded). Same texels. "
                     "false: the whole texture every frame, as before")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-// blur-nx (2026-11-17, the Renut audit's #4): Create / Retire.
-REXCVAR_DEFINE_BOOL(blur_renut_texture_pool, true, "Banjo/Renut",
+// blur-nx (2026-11-17, the Renut audit's #4, OFF by default for UE3 to avoid stale render target reuse): Create / Retire.
+REXCVAR_DEFINE_BOOL(blur_renut_texture_pool, false, "Banjo/Renut",
                     "blur-nx (audit #4, exact): a render-target image Retire gives back (a resolve destination made "
                     "again) is kept, once the in-flight frames are done with it, and Create takes one of the same "
                     "description instead of making a new image (Blur's race: 65 new images a second, each a GPU "

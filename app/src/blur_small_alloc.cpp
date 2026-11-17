@@ -28,10 +28,8 @@
 #include <mutex>
 #include <new>
 
-// renut-ultimate (2026-11-17, port 151; the user: "I want small block allocator on"): 32 MB by default, Blur's size
-// (Blur's console: 30.56 fps against 29.88 without it). The arena comes out of the game's heap; a title short of heap
-// sets a smaller size or 0 in its toml.
-REXCVAR_DEFINE_INT32(blur_small_alloc_mb, 32, "Blur/Enhancements",
+// renut-ultimate (2026-11-17, port 151; OFF by default for Deadpool UE3 custom FMalloc allocator).
+REXCVAR_DEFINE_INT32(blur_small_alloc_mb, 0, "Blur/Enhancements",
                      "#220 (Switch): an arena of this many MB for the host's small C++ allocations (up to 512 bytes), "
                      "free lists per thread instead of the system allocator's lock (0: off, the system allocator for all)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

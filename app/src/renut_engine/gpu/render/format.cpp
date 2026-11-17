@@ -11,9 +11,9 @@
 
 #include <rex/cvar.h>
 
-// renut-ultimate (2026-11-16, port 145; tw2de_nx's tw2de_deko3d_native_formats of 2026-10-25, ON at the user's word:
-// "port the speed ups as on by default").
-REXCVAR_DEFINE_BOOL(banjo_deko3d_native_16bit, true, "Banjo/Renut",
+// renut-ultimate (2026-11-16, port 145; tw2de_nx's tw2de_deko3d_native_formats of 2026-10-25, OFF by default
+// for Deadpool UE3 to prevent black 16-bit texture corruption on Switch).
+REXCVAR_DEFINE_BOOL(banjo_deko3d_native_16bit, false, "Banjo/Renut",
                     "tw2de_nx (exact): the game's unsigned 5:6:5, 1:5:5:5 and 4:4:4:4 textures in the GPU's own 16-bit "
                     "formats (deko3d RGB565, RGB5A1, RGBA4: the same bit layout), the guest's words copied. false: "
                     "expanded on the CPU to RGBA8 at upload, twice the memory and the GPU's reads, as before. deko3d only")
