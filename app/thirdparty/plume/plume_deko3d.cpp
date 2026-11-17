@@ -206,6 +206,7 @@ namespace plume {
         case RenderFormat::R32G32_SINT: return DkImageFormat_RG32_Sint;
         case RenderFormat::R8G8B8A8_TYPELESS:
         case RenderFormat::R8G8B8A8_UNORM: return DkImageFormat_RGBA8_Unorm;
+        case RenderFormat::R8G8B8A8_UNORM_SRGB: return DkImageFormat_RGBA8_Unorm_sRGB;
         case RenderFormat::R8G8B8A8_UINT: return DkImageFormat_RGBA8_Uint;
         case RenderFormat::R8G8B8A8_SNORM: return DkImageFormat_RGBA8_Snorm;
         case RenderFormat::R8G8B8A8_SINT: return DkImageFormat_RGBA8_Sint;

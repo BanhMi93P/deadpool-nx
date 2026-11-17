@@ -1,0 +1,34 @@
+# Deadpool hooked Xbox 360 D3D/GPU functions (excluded from direct_calls.py / flush_mode_flow.py).
+
+[functions]
+"0x82D92B70" = {}
+"0x82DB06C8" = {}
+"0x82DA3288" = {}
+"0x82DA9CB8" = {}
+"0x82DA8F18" = {}
+"0x82DAA238" = {}
+"0x82DA8E30" = {}
+"0x82DA8988" = {}
+"0x82DAA380" = {}
+"0x82DA3DC8" = {}
+"0x82DA8BB8" = {}
+"0x82D92290" = {}
+"0x82DAA138" = {}
+"0x82D938E0" = {}
+"0x82D93B90" = {}
+"0x829ACFF0" = {}
+"0x82DA60A8" = {}
+"0x82DA64C0" = {}
+"0x82DA5A80" = {}
+"0x82DA55C0" = {}
+"0x82DA55B0" = {}
+"0x82DA6008" = {}
+"0x82DA5AC8" = {}
+"0x82DA25C0" = {}
+"0x82DA84C0" = {}
+"0x82D918F8" = {}
+"0x82D9E680" = {}
+"0x82D9CA18" = {}
+"0x82D9CF78" = {}
+"0x82D9AD70" = {}
+"0x82DACA68" = {}

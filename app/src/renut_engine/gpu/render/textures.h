@@ -86,6 +86,7 @@ struct HostTexture {
   std::vector<SwizzleView> swizzle_views;
 
   bool gpu_written = false;     // content comes from a Resolve, not guest memory
+  uint64_t resolved_frame = 0;  // the frame of the last Resolve into this texture
   // banjo-nx (2026-10-19, render-thread proposal 1, banjo_renut_store_cards): the last content check's hash and the
   // card interval it was taken in (a check while no page of the texture was written since reuses it), and the
   // interval its last deferred upload read the guest bytes in (a dynamic texture is not uploaded again while none

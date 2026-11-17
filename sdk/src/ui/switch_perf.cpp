@@ -43,6 +43,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -65,6 +66,7 @@ extern "C" {
 void _start(void);
 /* rexglue log folder, ending in '/' (switch_crash_hooks.c). */
 const char* RexSwitchLogDir(void);
+void RexSwitchSanitizeThreadTls(void);
 /*
  * From the guest memory core (guest_memory_switch.cpp): how much backing is
  * committed and how much is mapped in total, counting the 360 mirrors.
@@ -1090,6 +1092,7 @@ FpcrCost MeasureFpcrCost(u64 tick_freq) {
 }
 
 void ProfilerMain(void*) {
+  RexSwitchSanitizeThreadTls();
   const u64 tick_freq = armGetSystemTickFreq();
 
   /*
@@ -1264,9 +1267,47 @@ __attribute__((constructor(102))) void StartProfiler() {
   }
 }
 
+struct WrappedThreadEntryArgs {
+  ThreadFunc real_entry;
+  void* real_arg;
+};
+
+void WrappedThreadEntry(void* arg) {
+  RexSwitchSanitizeThreadTls();
+  auto* ctx = static_cast<WrappedThreadEntryArgs*>(arg);
+  ThreadFunc real_entry = ctx->real_entry;
+  void* real_arg = ctx->real_arg;
+  std::free(ctx);
+  real_entry(real_arg);
+  RexSwitchSanitizeThreadTls();
+}
+
 }  // namespace
 
+struct __cxa_eh_globals {
+  void* caughtExceptions;
+  unsigned int uncaughtExceptions;
+};
+
+static thread_local __cxa_eh_globals s_rex_eh_globals{nullptr, 0};
+
 extern "C" {
+
+__cxa_eh_globals* __wrap___cxa_get_globals(void) {
+  return &s_rex_eh_globals;
+}
+
+__cxa_eh_globals* __wrap___cxa_get_globals_fast(void) {
+  return &s_rex_eh_globals;
+}
+
+bool __wrap__ZSt18uncaught_exceptionv(void) {
+  return s_rex_eh_globals.uncaughtExceptions != 0;
+}
+
+int __wrap__ZSt19uncaught_exceptionsv(void) {
+  return static_cast<int>(s_rex_eh_globals.uncaughtExceptions);
+}
 
 /*
  * banjo-nx: optional per-thread hooks for an app-side profiler (app/src/profiler, ported from
@@ -1278,8 +1319,16 @@ void RexSwitchAppThreadClosed(u32 handle) __attribute__((weak));
 
 Result __wrap_threadCreate(Thread* t, ThreadFunc entry, void* arg, void* stack_mem,
                            size_t stack_sz, int prio, int cpuid) {
-  const Result rc = __real_threadCreate(t, entry, arg, stack_mem, stack_sz, prio, cpuid);
-  if (R_SUCCEEDED(rc) && t) {
+  auto* ctx = static_cast<WrappedThreadEntryArgs*>(std::malloc(sizeof(WrappedThreadEntryArgs)));
+  if (!ctx) {
+    return MAKERESULT(Module_Libnx, LibnxError_HeapAllocFailed);
+  }
+  ctx->real_entry = entry;
+  ctx->real_arg = arg;
+  const Result rc = __real_threadCreate(t, WrappedThreadEntry, ctx, stack_mem, stack_sz, prio, cpuid);
+  if (R_FAILED(rc)) {
+    std::free(ctx);
+  } else if (t) {
     Register(t->handle);
     if (RexSwitchAppThreadCreated) {
       RexSwitchAppThreadCreated(t->handle);

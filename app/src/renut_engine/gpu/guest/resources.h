@@ -93,6 +93,7 @@ struct ShaderRecord {
     // a miss on the host shader at most vertex shader changes), -1 until a draw asks; the host is set once per record.
     int8_t reads_vertex_id = -1;
     u32 valid[8] = {};  // the groups' registers (a whole upload's 'valid'; the first upload only)
+    u32 vs_input_locations = ~0u;  // bitmask of RENUT_VERTEX_INPUT_LOCATIONS read via IA by this VS
   };
   mutable DrawSummary draw_summary;
   // banjo-nx (banjo_gpu_bool_spec): the bools the shader's SPIR-V specialises (ShaderBoolSpecMask), read on the
@@ -148,6 +149,11 @@ void BuildDeclarationLayout(VertexDeclarationRecord &declaration);
 // The vertex shader's fetch declaration (see ShaderRecord::fetch_declaration).
 // Requires State().mutex.
 const VertexDeclarationRecord *ShaderFetchDeclarationLocked(ShaderRecord &vs);
+
+// Guest-allocated vertex declarations (Deadpool's CreateVertexDeclaration / FVFToVertexDeclaration).
+// Requires State().mutex.
+const VertexDeclarationRecord *FindGuestDeclarationLocked(u32 declaration_va);
+void ReleaseGuestDeclarationLocked(u32 declaration_va);
 
 // The shader's host object, building it on first call. nullptr if the shader
 // is missing from the cache or creation failed. Requires State().mutex.

@@ -89,6 +89,10 @@ class Entry {
   uint32_t attributes() const { return attributes_; }
   size_t size() const { return size_; }
   size_t allocation_size() const { return allocation_size_; }
+  void SetPatchedSize(size_t size) {
+    size_ = size;
+    allocation_size_ = (size + 4095) & ~size_t(4095);
+  }
   uint64_t create_timestamp() const { return create_timestamp_; }
   uint64_t access_timestamp() const { return access_timestamp_; }
   uint64_t write_timestamp() const { return write_timestamp_; }

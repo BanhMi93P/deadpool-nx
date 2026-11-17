@@ -1,58 +1,535 @@
-# katamari-nx: named functions and function boundaries of Beautiful Katamari (docs/katamari-notes.md, "Code generation").
-[functions]
-# First codegen (2026-10-30): three "target not in any function", each a function reached only by a tail jump from a
-# thunk, after its neighbour's blr / bctr and padding (tools/ppc_dis.py):
-#   0x825387E8 from 0x82538814 (`addi r3,r3,-4; b 0x825387E8`): `addi r11,r3,4; lwz r10,4(r11); addi r3,r10,1;
-#     stw r3,4(r11); blr` (an AddRef through an adjusted this).
-#   0x8266DEA0 from 0x82270930 (`b 0x8266DEA0`): `mr r11,r4; mr r4,r3; mr r3,r11; lwz r10,0(r11); lwz r11,136(r10);
-#     bctr` (a virtual call through the second argument's vtable, slot 34).
-#   0x82408488 from 0x823DD968 (`addi r3,r11,288; b 0x82408488`): a table lookup that tail-calls sub_824A3650.
-"0x825387E8" = { }
-"0x8266DEA0" = { }
-"0x82408488" = { }
-# Second codegen: three "Unresolved conditional branch". Each target is a `li r3,0; blr` tail that the scanner left
-# outside the function branching to it (0x822AC5C0's function ends at the blr before it; sub_82685530 is a registered
-# start that branches back to 0x82685528, its entry stub's tail). Declared as functions of their own, the branches
-# become conditional tail calls with the same effect (return 0). 0x82685520 (`cmplwi cr6,r4,0; bne cr6,0x82685530`,
-# then the tail) is the entry stub of the function the scanner started at 0x82685530: declared as one function over
-# the whole body (the generator emits no fall-through into a next function, and refuses overlapping declarations).
-"0x822AC5E8" = { end = 0x822AC5F0 }
-"0x82685520" = { end = 0x826855C8 }
+# Deadpool-specific analysis corrections for the code generator.
 
-# katamari-nx (2026-10-30 evening, the register-diet codegen): split pieces that read non-volatile registers their
-# parent set up (tools/read_before_write.py on code generated WITH non_volatile_as_local, out/audit/gen2; the pieces
-# also listed in overrides.toml carry the mark there). Without it sub_824CF3F8 read a zeroed r31 and handed a wrong
-# frame to its __finally funclet: the boot crash of the first diet build.
-"0x824C97F0" = { share_registers = true }  # reads r30
-"0x824C9B80" = { share_registers = true }  # reads r30
-"0x827F91D4" = { share_registers = true }  # reads r31
-"0x828C74A8" = { share_registers = true }  # reads r24 r26 r27 r29
-"0x828C8DE8" = { share_registers = true }  # reads r30
-"0x828CC530" = { share_registers = true }  # reads r22
-"0x828D0AC8" = { share_registers = true }  # reads r29
-"0x828D27B0" = { share_registers = true }  # reads r30
-"0x828D2B28" = { share_registers = true }  # reads r17
-"0x828D6CA0" = { share_registers = true }  # reads r25
-"0x828D7780" = { share_registers = true }  # reads r15 r17 r27 r28 r29 r30
-"0x828E4F78" = { share_registers = true }  # reads r18 r19 r28
-"0x828ED618" = { share_registers = true }  # reads f26 f27 f28 f29 f30 r14 r22 r23 r26 r31
-"0x82904F58" = { share_registers = true }  # reads r22 r24
-"0x82912CF0" = { share_registers = true }  # reads r30
-"0x82917C90" = { share_registers = true }  # reads r26
-"0x8291A458" = { share_registers = true }  # reads r28 r29
-"0x82927520" = { share_registers = true }  # reads f31 r16 r17 r18 r23 r25 r28 r29
-"0x8292FC58" = { share_registers = true }  # reads r24 r25 r26
-"0x829304B8" = { share_registers = true }  # reads r25 r29
-"0x82939A30" = { share_registers = true }  # reads r28
-"0x8293C418" = { share_registers = true }  # reads r31
-"0x8293D220" = { share_registers = true }  # reads r22
-"0x829462A0" = { share_registers = true }  # reads r28 r30
-"0x829469A8" = { share_registers = true }  # reads r16 r22 r24 r25 r29
-"0x82949378" = { share_registers = true }  # reads r20 r28 r29 r30
-"0x82949DE8" = { share_registers = true }  # reads f31 r22 r23 r24 r25
-"0x82970030" = { share_registers = true }  # reads r28
-"0x829EC658" = { share_registers = true }  # reads v69 v72
-"0x829ECA00" = { share_registers = true }  # reads v69
-"0x829ECCC0" = { share_registers = true }  # reads v69 v72
-"0x829ECF28" = { share_registers = true }  # reads v69
-"0x829EE070" = { share_registers = true }  # reads v64 v65
+[functions]
+# Initial validation pass: direct unconditional branches (tail calls) to targets
+# not assigned to any function by automatic discovery.
+"0x82410B38" = { } # from 0x823B3668
+"0x82823130" = { } # from 0x82BA2EA0
+"0x82832090" = { } # from 0x8294FB48
+"0x82870378" = { } # from 0x82B2D7C8
+"0x8288F9E8" = { } # from 0x8282DA48
+"0x82891200" = { } # from 0x8282D990
+"0x82891DE0" = { } # from 0x8282DA08
+"0x828980D8" = { } # from 0x82C51310
+"0x82B10950" = { } # from 0x82AF6DE4
+"0x82B2D520" = { } # from 0x82C51380
+"0x82B72388" = { } # from 0x82A32984
+"0x82B8FE88" = { } # from 0x82AC4048
+"0x82B8FEB0" = { } # from 0x82AC42F0
+"0x82B91E60" = { } # from 0x82AC4298
+"0x82B91F20" = { } # from 0x82AC42B0
+"0x82B91F38" = { } # from 0x82AC4050
+"0x82BA2EC8" = { } # from 0x82BCABE0
+"0x82BA6850" = { } # from 0x82BCAD20
+"0x82BA6938" = { } # from 0x82BCAD38
+"0x82BA6950" = { } # from 0x82BCAD48
+"0x831D10D8" = { } # from 0x831D1244
+"0x831E70B8" = { } # from 0x831EB8FC
+
+# Vtable-like function pointers in gaps discovered by tools/pointer_audit.py
+"0X823BB848" = { }  # in a gap, from default:0x820072E8 | before: bctr | cmplwi cr6,r6,0
+"0X823E4AC0" = { }  # in a gap, from default:0x8200CCF0, default:0x8211673C | before: bctr | stw r4,172(r3)
+"0X823F7480" = { }  # in a gap, from default:0x8359008C | before: bctr | lis r11,0x835F0000
+"0X823F99D8" = { }  # in a gap, from default:0x83590320 | before: bctr | lwz r11,12(r4)
+"0X82410B58" = { }  # in a gap, from default:0x82000C34, default:0x82000D7C, default:0x82000EB4 (+1221) | before: bctr | lwz r11,0(r3)
+"0X82413AC0" = { }  # in a gap, from default:0x8200FB7C | before: b 0x82413A6C | b 0x824424F0
+"0X82415530" = { }  # in a gap, from default:0x82006560, default:0x82006644, default:0x82006664 (+10) | before: bctr | lwz r11,4(r5)
+"0X82472DA8" = { }  # in a gap, from default:0x8204F6C4, default:0x8212720C, default:0x821273E4 | before: bctr | addi r3,r3,-40
+"0X824D8F80" = { }  # in a gap, from default:0x8205FDF8 | before: b 0x824D8F48 | addi r3,r3,-48
+"0X824D8F98" = { }  # in a gap, from default:0x8205FE5C | before: b 0x824D8F60 | addi r3,r3,-48
+"0X824DBBE8" = { }  # in a gap, from default:0x8205FF9C, default:0x82061184 | before: bctr | lwz r11,28(r3)
+"0X824DCF88" = { }  # in a gap, from default:0x820603A0 | before: b 0x824CD768 | addi r3,r3,-44
+"0X82525920" = { }  # in a gap, from default:0x820681D4, default:0x8206857C, default:0x8206DBAC (+1) | before: b 0x82765188 | lwz r11,468(r3)
+"0X82525948" = { }  # in a gap, from default:0x8206A17C | before: b 0x824D7980 | lwz r11,484(r3)
+"0X825AE418" = { }  # in a gap, from default:0x820618F8, default:0x82061CE0, default:0x82065DE0 (+5) | before: bctr | lwz r11,496(r3)
+"0X8260C2C8" = { }  # in a gap, from default:0x82061D10, default:0x8209D588, default:0x82123798 (+1) | before: b 0x825ADF48 | lis r11,0x82000000
+"0X82632948" = { }  # in a gap, from default:0x820A0530 | before: b 0x832E2038 | lwz r3,56(r3)
+"0X826F3A78" = { }  # in a gap, from default:0x820BB0B8 | before: bctr | lwz r10,0(r4)
+"0X826F3FF0" = { }  # in a gap, from default:0x820C1BA8 | before: bctr | lwz r10,0(r4)
+"0X826F5448" = { }  # in a gap, from default:0x820BD1E8 | before: bctr | lwz r10,0(r4)
+"0X826F5468" = { }  # in a gap, from default:0x820C1D18 | before: bctr | lwz r11,0(r4)
+"0X826F58E0" = { }  # in a gap, from default:0x820BEF00 | before: bctr | lwz r10,0(r4)
+"0X82720900" = { }  # in a gap, from default:0x820C7564 | before: bctr | lis r11,0x820C0000
+"0X828230D0" = { }  # in a gap, from default:0x820ECBEC, default:0x820F15C4, default:0x82144C64 | before: bctr | b 0x82891E40
+"0X8282BB78" = { }  # in a gap, from default:0x820EA10C, default:0x820EACAC, default:0x820EB0FC (+130) | before: bctr | lwz r11,0(r3)
+"0X8282BB88" = { }  # in a gap, from default:0x820EA114, default:0x820EACB4, default:0x820EB104 (+104) | before: bctr | lwz r11,0(r3)
+"0X8282BB98" = { }  # in a gap, from default:0x820EA128, default:0x820EACC8, default:0x820EB118 (+43) | before: bctr | b 0x8289CD38
+"0X82838210" = { }  # in a gap, from default:0x820F565C | before: b 0x8252F538 | addi r3,r3,-52
+"0X828382C8" = { }  # in a gap, from default:0x820F5760 | before: b 0x8252F778 | addi r3,r3,-52
+"0X828382D0" = { }  # in a gap, from default:0x820F576C | before: b 0x8252F790 | addi r3,r3,-52
+"0X82838390" = { }  # in a gap, from default:0x820F3D8C | before: b 0x8252FAE8 | addi r3,r3,-52
+"0X82838428" = { }  # in a gap, from default:0x820F3E0C, default:0x820F56C0, default:0x820F56D4 (+3) | before: b 0x8252B4B8 | addi r3,r3,-52
+"0X82838440" = { }  # in a gap, from default:0x820F3E2C, default:0x820F56F4, default:0x820F5804 (+1) | before: b 0x8252B4C0 | rlwinm r5,r5,0,24,31
+"0X828384C8" = { }  # in a gap, from default:0x820F3EA0 | before: b 0x82530038 | addi r3,r3,-52
+"0X828384D0" = { }  # in a gap, from default:0x820F3EAC | before: b 0x82530058 | addi r3,r3,-52
+"0X82848400" = { }  # in a gap, from default:0x820FDBD4, default:0x8210F124, default:0x8210F484 (+12) | before: bctr | rlwinm r4,r4,0,24,31
+"0X82861B48" = { }  # in a gap, from default:0x820FE928 | before: bctr | lwz r11,448(r3)
+"0X828629C8" = { }  # in a gap, from default:0x820F5C44 | before: b 0x824748C8 | addi r3,r3,-52
+"0X828629F0" = { }  # in a gap, from default:0x820F5CCC | before: b 0x82474388 | addi r3,r3,-52
+"0X82862A20" = { }  # in a gap, from default:0x820F412C | before: b 0x824749F8 | addi r3,r3,-52
+"0X82870460" = { }  # in a gap, from default:0x82286D80, default:0x822870B0, default:0x82287178 (+2) | before: bctr | lwz r11,0(r3)
+"0X828709E8" = { }  # in a gap, from default:0x820EF27C, default:0x820F292C, default:0x820F9DE4 (+2) | before: bctr | lwz r11,488(r3)
+"0X82870D88" = { }  # in a gap, from default:0x820F45CC | before: b 0x825585C8 | rlwinm r6,r6,0,24,31
+"0X82870F50" = { }  # in a gap, from default:0x820F4B28, default:0x820F60A8 | before: bctr | lwz r11,-52(r3)
+"0X828712A0" = { }  # in a gap, from default:0x820F4AA4 | before: b 0x825583C8 | rlwinm r6,r6,0,24,31
+"0X82871360" = { }  # in a gap, from default:0x820F4A38 | before: b 0x82558580 | addi r3,r3,-52
+"0X828713F0" = { }  # in a gap, from default:0x820F4B14, default:0x820F6094 | before: b 0x82558200 | lwz r11,-52(r3)
+"0X82878B10" = { }  # in a gap, from default:0x820F4C9C | before: b 0x825584E8 | rlwinm r6,r6,0,24,31
+"0X82878C28" = { }  # in a gap, from default:0x820F6340 | before: b 0x825590F8 | addi r3,r3,-52
+"0X82878C50" = { }  # in a gap, from default:0x820F6354 | before: b 0x8255FF70 | rlwinm r5,r5,0,24,31
+"0X82878C68" = { }  # in a gap, from default:0x820F4E00 | before: b 0x82559170 | addi r5,r5,-16
+"0X828792F0" = { }  # in a gap, from default:0x820F4F10, default:0x820F4F70 | before: bctr | lwz r11,-16(r3)
+"0X8288FA28" = { }  # in a gap, from default:0x820FED68, default:0x82104118, default:0x82140CF0 (+33) | before: bctr | lwz r11,0(r3)
+"0X828A19B0" = { }  # in a gap, from default:0x820F3D34, default:0x820F42BC, default:0x820F436C (+4) | before: bctr | lwz r11,-16(r3)
+"0X828A19C8" = { }  # in a gap, from default:0x820F3D38, default:0x820F42C0, default:0x820F4370 (+4) | before: bctr | lwz r11,-16(r3)
+"0X828A1A88" = { }  # in a gap, from default:0x820F3D58, default:0x820F42E0, default:0x820F4390 (+4) | before: bctr | lwz r11,-16(r3)
+"0X828A27E8" = { }  # in a gap, from default:0x820F53B4 | before: b 0x825D5B08 | lwz r10,124(r3)
+"0X828A9278" = { }  # in a gap, from default:0x820F42FC, default:0x820F43AC, default:0x820F5AA4 | before: bctr | lwz r11,-16(r3)
+"0X828A9290" = { }  # in a gap, from default:0x820FC420 | before: bctr | lwz r10,124(r3)
+"0X828C6FF0" = { }  # in a gap, from default:0x82113184 | before: bctr | lwz r11,-40(r3)
+"0X828C7020" = { }  # in a gap, from default:0x821131A4 | before: bctr | lwz r11,-40(r3)
+"0X828C7050" = { }  # in a gap, from default:0x821131B8 | before: bctr | lwz r11,-40(r3)
+"0X828C7118" = { }  # in a gap, from default:0x821B7A2C | before: bctr | lwz r11,196(r3)
+"0X828F28A8" = { }  # in a gap, from default:0x821176B4 | before: b 0x828DEF20 | addi r5,r5,-16
+"0X82902D10" = { }  # in a gap, from default:0x8211AFE0 | before: bctr | lwz r11,32(r3)
+"0X8294F8D8" = { }  # in a gap, from default:0x8214156C, default:0x8221E67C | before: bctr | li r11,0
+"0X8295CDF8" = { }  # in a gap, from default:0x821365F0, default:0x821372DC, default:0x8221497C (+1) | before: b 0x82750F30 | lis r10,0x83650000
+"0X829BAFB0" = { }  # in a gap, from default:0x8214BDAC, default:0x82153ABC | before: bctr | lwz r3,4(r3)
+"0X829EAD98" = { }  # in a gap, from default:0x82153308 | before: bctr | b 0x823B6428
+"0X829EB940" = { }  # in a gap, from default:0x82153074 | before: bctr | lwz r11,888(r3)
+"0X829EBA80" = { }  # in a gap, from default:0x82153064, default:0x821537CC | before: bctr | addi r3,r3,-16
+"0X829EBB98" = { }  # in a gap, from default:0x82152FD8, default:0x82152FDC | before: b 0x829BA5B8 | addi r3,r3,-308
+"0X829EBE40" = { }  # in a gap, from default:0x82152C60 | before: b 0x829BAAF8 | addi r3,r3,-324
+"0X829EBE48" = { }  # in a gap, from default:0x82152F7C, default:0x8215345C | before: b 0x829BAB20 | addi r6,r6,-16
+"0X829EC070" = { }  # in a gap, from default:0x8215368C | before: bctr | lwz r11,3248(r3)
+"0X829EC088" = { }  # in a gap, from default:0x82153694 | before: bctr | lwz r11,3248(r3)
+"0X829EC158" = { }  # in a gap, from default:0x82152DCC, default:0x821536EC | before: bctr | lwz r11,-304(r3)
+"0X829EC170" = { }  # in a gap, from default:0x8215341C | before: bctr | lwz r11,32(r3)
+"0X82A40968" = { }  # in a gap, from default:0x8216FA78, default:0x8216FBF0, default:0x8216FD68 (+1) | before: bctr | lwz r11,40(r3)
+"0X82A40980" = { }  # in a gap, from default:0x8216FB1C, default:0x8216FC94, default:0x8216FE0C (+1) | before: bctr | lwz r11,80(r3)
+"0X82A40CA8" = { }  # in a gap, from default:0x8216FD1C, default:0x8216FE94 | before: bctr | rlwinm r11,r4,0,24,31
+"0X82A4DF38" = { }  # in a gap, from default:0x820068D0, default:0x82006A68, default:0x8204C458 (+18) | before: bctr | lwz r11,0(r3)
+"0X82A4E0C0" = { }  # in a gap, from default:0x8221B974 | before: bctr | lwz r11,184(r3)
+"0X82A4E290" = { }  # in a gap, from default:0x82170738 | before: bctr | lwz r11,64(r3)
+"0X82AA39F8" = { }  # in a gap, from default:0x8218B920 | before: bctr | li r11,16
+"0X82AD0CE8" = { }  # in a gap, from default:0x82217AD0, default:0x82219410, default:0x8221B2E0 | before: b 0x82AFE4E0 | lis r11,0x83650000
+"0X82B1D770" = { }  # in a gap, from default:0x821A3554, default:0x821A3C9C | before: b 0x82B10DA0 | b 0x82B10DB8
+"0X82B1DBF0" = { }  # in a gap, from default:0x8226A2C0 | before: b 0x82862080 | addi r3,r3,-832
+"0X82B2D4F8" = { }  # in a gap, from default:0x8216459C, default:0x821649B4, default:0x82164DCC (+404) | before: bctr | b 0x82C4F1F0
+"0X82B3DF90" = { }  # in a gap, from default:0x8219C938, default:0x8219CD60, default:0x8219D188 (+19) | before: b 0x82B90F38 | lwz r11,984(r3)
+"0X82B49788" = { }  # in a gap, from default:0x821ABFC8, default:0x821AC2C8, default:0x821AC5C0 | before: b 0x82B3D3B0 | b 0x82B463F8
+"0X82B58248" = { }  # in a gap, from default:0x82208BD8 | before: bctr | lwz r11,32(r3)
+"0X82B72C50" = { }  # in a gap, from default:0x821B32DC, default:0x821B361C | before: bctr | lwz r11,1176(r3)
+"0X82BA35A8" = { }  # in a gap, from default:0x821BBB48 | before: bctr | lwz r11,20(r3)
+"0X82BA35C0" = { }  # in a gap, from default:0x821BBB54 | before: bctr | lwz r11,20(r3)
+"0X82BA3EB8" = { }  # in a gap, from default:0x821BBCA4 | before: bctr | lwz r11,4(r3)
+"0X82BC1360" = { }  # in a gap, from default:0x821BF3EC, default:0x821BF3F0, default:0x821BF974 (+157) | before: bctr | lwz r11,1680(r3)
+"0X82BCAC68" = { }  # in a gap, from default:0x821C7F00, default:0x821CF280, default:0x821D6608 | before: bctr | b 0x82BA2D98
+"0X82BD0160" = { }  # in a gap, from default:0x821CE3EC, default:0x821CE96C, default:0x821CEEEC (+18) | before: b 0x82BD0068 | lwz r10,0(r4)
+"0X82BD0510" = { }  # inside sub_82BD01E4, from default:0x821D5774, default:0x821D5CF4, default:0x821D6274 (+18) | before: b 0x82BCF0B8 | lwz r10,0(r4)
+"0X82BD1FE0" = { }  # in a gap, from default:0x8220B6AC | before: bctr | lwz r11,52(r3)
+"0X82BD2000" = { }  # in a gap, from default:0x8220B710 | before: bctr | lbz r11,192(r3)
+"0X82BE0C10" = { }  # in a gap, from default:0x8220C230, default:0x8220C300 | before: bctr | lfs f0,44(r3)
+"0X82BE3008" = { }  # in a gap, from default:0x821E1C4C | before: b 0x82AFDD58 | lwz r11,4(r3)
+"0X82BE35B8" = { }  # in a gap, from default:0x821E1DEC | before: bctr | lwz r11,228(r3)
+"0X82BE5520" = { }  # in a gap, from default:0x821E1B44 | before: b 0x82642510 | lwz r3,4(r3)
+"0X82BE5528" = { }  # in a gap, from default:0x821E1B48 | before: b 0x82642528 | lwz r3,4(r3)
+"0X82BF0DB8" = { }  # in a gap, from default:0x821E3B68 | before: bctr | lwz r11,4(r3)
+"0X82BF0DD0" = { }  # in a gap, from default:0x821E3B6C | before: bctr | lwz r11,4(r3)
+"0X82BF1F08" = { }  # in a gap, from default:0x8220C870 | before: b 0x82BF1ECC | lwz r10,64(r3)
+"0X82BF2438" = { }  # in a gap, from default:0x821E4420 | before: bctr | lis r11,0x82000000
+"0X82BFCDB0" = { }  # in a gap, from default:0x821E4144, default:0x821E44D4, default:0x821E483C | before: b 0x82BF2420 | b 0x82BFBF58
+"0X82C0B638" = { }  # in a gap, from default:0x821E6EA0 | before: b 0x82C34108 | lwz r11,8(r3)
+"0X82CCD7E0" = { }  # in a gap, from default:0x8222F0B8, default:0x82232358, default:0x82235A10 (+1) | before: bctr | b 0x82B34630
+"0X82CDC840" = { }  # in a gap, from default:0x82282A58 | before: bctr | rlwinm r11,r6,0,24,31
+"0X82D59408" = { }  # in a gap, from default:0x82287198 | before: bctr | lwz r11,12(r3)
+"0X82DF3FE0" = { }  # in a gap, from default:0x8229550C, default:0x82295514, default:0x8229551C (+6) | before: bctr | lwz r11,0(r3)
+"0X82DF4878" = { }  # in a gap, from default:0x8229571C, default:0x822959A4 | before: bctr | lwz r11,0(r3)
+"0X82F38E18" = { }  # in a gap, from default:0x822C2404 | before: bctr | lwz r11,16(r3)
+"0X82F72FE0" = { }  # in a gap, from default:0x822C6E3C, default:0x822CA1EC, default:0x822CA254 (+10) | before: b 0x82F72F74 | lwz r10,228(r3)
+"0X82FBFB90" = { }  # in a gap, from default:0x822D1F78 | before: bctr | lwz r3,164(r3)
+"0X82FC4BB8" = { }  # in a gap, from default:0x822D1FB0 | before: bctr | lwz r11,4(r3)
+"0X82FC4BD0" = { }  # in a gap, from default:0x822D1FB4 | before: bctr | lwz r11,4(r3)
+"0X82FDECC8" = { }  # in a gap, from default:0x822D2B70 | before: bctr | lwz r11,24(r3)
+"0X82FDED00" = { }  # in a gap, from default:0x822D2B88 | before: b 0x830823E8 | lwz r3,4(r3)
+"0X82FDED60" = { }  # in a gap, from default:0x822D2B78 | before: bctr | lwz r11,4(r3)
+"0X82FF29B0" = { }  # in a gap, from default:0x822D6848, default:0x822D73E0, default:0x822D88F0 (+2) | before: bctr | lwz r11,160(r3)
+"0X82FF2A90" = { }  # in a gap, from default:0x822D6940, default:0x822D74D8, default:0x822D89E8 (+2) | before: bctr | stw r4,176(r3)
+"0X8304A228" = { }  # in a gap, from default:0x822DA2F4 | before: b 0x8304A218 | addi r3,r3,-12
+"0X8304D750" = { }  # in a gap, from default:0x822DA7C4 | before: bctr | lwz r11,0(r3)
+"0X8307B788" = { }  # in a gap, from default:0x822DB6DC | before: b 0x8307A8C8 | lwz r11,52(r3)
+"0X83084F98" = { }  # in a gap, from default:0x822DC10C | before: b 0x83084EA0 | lwz r11,20(r4)
+"0X83085388" = { }  # in a gap, from default:0x822DC11C | before: bctr | rlwinm. r11,r4,0,23,23
+"0X830B5BC8" = { }  # in a gap, from default:0x822DD728 | before: b 0x830B5B40 | addi r3,r3,-120
+"0X830E7CE0" = { }  # in a gap, from default:0x822E1474 | before: b 0x830E7658 | lwz r11,0(r5)
+"0X83103648" = { }  # in a gap, from default:0x822E174C, default:0x822E1874, default:0x822E1A1C | before: b 0x83103568 | lwz r11,76(r3)
+"0X83108618" = { }  # in a gap, from default:0x822E1ABC | before: b 0x831085C8 | lwz r8,184(r3)
+"0X831099F8" = { }  # in a gap, from default:0x822E1B84 | before: b 0x83109970 | mr r11,r3
+"0X8310A1B8" = { }  # in a gap, from default:0x822E1C34 | before: bctr | lwz r11,72(r3)
+"0X8310B0C8" = { }  # in a gap, from default:0x822E1BCC | before: b 0x8310B098 | addi r3,r3,-16
+"0X8310BDF8" = { }  # in a gap, from default:0x822E1C8C | before: b 0x8310E358 | addi r3,r3,-32
+"0X8310ED00" = { }  # in a gap, from default:0x822E1E64 | before: b 0x8310ECE8 | lhz r11,40(r3)
+"0X8311C460" = { }  # in a gap, from default:0x822E5C6C, default:0x822E5CC8 | before: b 0x8311C3D0 | addi r3,r3,-4
+"0X8311C968" = { }  # in a gap, from default:0x822E5C68, default:0x822E5CC4 | before: b 0x8311C728 | addi r3,r3,-4
+"0X8311C978" = { }  # in a gap, from default:0x822E5CDC | before: b 0x8311C720 | addi r3,r3,-4
+"0X8311E2A0" = { }  # in a gap, from default:0x822E5C7C, default:0x822E5D94 | before: bctr | addi r3,r3,-4
+"0X8311E2B8" = { }  # in a gap, from default:0x822E5D80, default:0x822E5D84 | before: b 0x8311E120 | addi r3,r3,-4
+"0X8314EA38" = { }  # in a gap, from default:0x82302864, default:0x82302BB4 | before: bctr | lwz r3,4(r3)
+"0X8314EA70" = { }  # in a gap, from default:0x82302868 | before: bctr | lis r11,0x836F0000
+"0X83183588" = { }  # in a gap, from default:0x823056A0 | before: b 0x831A13B8 | mr r3,r4
+"0X831835E8" = { }  # in a gap, from default:0x823056C0 | before: b 0x831A13F8 | mr r3,r4
+"0X83183618" = { }  # in a gap, from default:0x823056D0 | before: b 0x831A1418 | mr r3,r4
+"0X83183780" = { }  # in a gap, from default:0x82305754 | before: b 0x831A1DC0 | mr r6,r7
+"0X83183980" = { }  # in a gap, from default:0x823057A0 | before: b 0x831A3988 | mr r3,r4
+"0X831C3D10" = { }  # in a gap, from default:0x8230AF00 | before: bctr | lbz r11,20(r3)
+"0X831C5AA8" = { }  # in a gap, from default:0x8230B460 | before: bctr | lwz r11,-36(r3)
+"0X831C9848" = { }  # in a gap, from default:0x823058E0 | before: bctr | blr
+"0X8320EC40" = { }  # in a gap, from default:0x8231C78C | before: b 0x83220D40 | stw r4,36(r3)
+"0X83212888" = { }  # in a gap, from default:0x8231D10C | before: b 0x83220D40 | stw r4,36(r3)
+"0X83214128" = { }  # in a gap, from default:0x8231D87C | before: b 0x83220D40 | stw r4,36(r3)
+"0X83215618" = { }  # in a gap, from default:0x8231DE84 | before: b 0x83220D40 | stw r4,36(r3)
+"0X83216318" = { }  # in a gap, from default:0x8231E524 | before: b 0x83220D40 | stw r4,36(r3)
+"0X832171E0" = { }  # in a gap, from default:0x8231EBBC | before: b 0x83220D40 | stw r4,36(r3)
+"0X83218328" = { }  # in a gap, from default:0x8231F6AC | before: b 0x83220D40 | stw r4,36(r3)
+"0X8321A448" = { }  # in a gap, from default:0x8231FD3C | before: b 0x83220D40 | stw r4,36(r3)
+"0X8321B210" = { }  # in a gap, from default:0x82320B64 | before: b 0x83220D40 | stw r4,36(r3)
+"0X8321DD28" = { }  # in a gap, from default:0x82321224 | before: b 0x83220D40 | stw r4,36(r3)
+"0X83229408" = { }  # in a gap, from default:0x82325D30 | before: b 0x83275550 | addi r3,r3,772
+"0X83229A50" = { }  # in a gap, from default:0x82325D44 | before: b 0x8326E290 | lwz r11,372(r3)
+"0X832498D0" = { }  # in a gap, from default:0x82326B58 | before: b 0x83245130 | addi r3,r3,-92
+"0X832498D8" = { }  # in a gap, from default:0x82326B64 | before: b 0x83245618 | addi r3,r3,-92
+"0X832498E0" = { }  # in a gap, from default:0x82326CD8 | before: b 0x832455F8 | lwz r11,328(r3)
+"0X83249DB0" = { }  # in a gap, from default:0x82327050, default:0x82331540, default:0x82331B68 (+6) | before: bctr | lwz r3,296(r3)
+"0X8324C138" = { }  # in a gap, from default:0x82327410 | before: bctr | blr
+"0X83269A08" = { }  # in a gap, from default:0x8232FDF8 | before: bctr | rlwinm r11,r5,0,24,31
+"0X832733E0" = { }  # in a gap, from default:0x82330EC4, default:0x823330D4, default:0x823332DC (+8) | before: bctr | lfs f0,48(r3)
+"0X83275250" = { }  # in a gap, from default:0x82330EF0, default:0x82333100, default:0x82333308 (+8) | before: bctr | lwz r11,32(r3)
+"0X832873B0" = { }  # in a gap, from default:0x82331CCC | before: bctr | lwz r3,388(r3)
+"0X83294C40" = { }  # in a gap, from default:0x82333684 | before: bctr | blr
+"0X83296EA8" = { }  # in a gap, from default:0x82333B98 | before: bctr | lwz r11,328(r3)
+"0X83296F08" = { }  # in a gap, from default:0x82333BA0 | before: bctr | lwz r11,340(r3)
+"0X8329A608" = { }  # in a gap, from default:0x823341A0 | before: bctr | lwz r11,344(r3)
+"0X8329EB30" = { }  # in a gap, from default:0x82334458 | before: bctr | addi r11,r4,79
+"0X8329EB50" = { }  # in a gap, from default:0x8233445C | before: bctr | lwz r11,0(r4)
+"0X8329EC98" = { }  # in a gap, from default:0x82334474 | before: bctr | lwz r11,0(r4)
+"0X8329ECC8" = { }  # in a gap, from default:0x82334478 | before: bctr | lwz r11,0(r4)
+"0X8329ECF8" = { }  # in a gap, from default:0x823343D8 | before: bctr | lwz r11,0(r3)
+"0X832C80A0" = { }  # in a gap, from default:0x82335CF0 | before: bctr | li r3,0
+"0X832EFD88" = { }  # in a gap, from default:0x82336198, default:0x82336258, default:0x82336318 | before: bctr | li r9,9
+"0X832F6F88" = { }  # in a gap, from default:0x82336930 | before: b 0x8330FB48 | lwz r3,56(r3)
+"0X832F6F98" = { }  # in a gap, from default:0x82336940 | before: b 0x8330FDC8 | lwz r3,52(r3)
+
+# Additional gap targets discovered by pointer audit (including 0x82EB7D40)
+"0X82823018" = { }
+"0X8282D8E8" = { }
+"0X8282E1E8" = { }
+"0X828381E0" = { }
+"0X828381E8" = { }
+"0X828381F0" = { }
+"0X828381F8" = { }
+"0X82838208" = { }
+"0X82838248" = { }
+"0X82838258" = { }
+"0X82838260" = { }
+"0X82838268" = { }
+"0X82838270" = { }
+"0X82838308" = { }
+"0X82838358" = { }
+"0X82838360" = { }
+"0X82838368" = { }
+"0X82838370" = { }
+"0X82838378" = { }
+"0X82838388" = { }
+"0X828383C8" = { }
+"0X828383D8" = { }
+"0X82838430" = { }
+"0X82838460" = { }
+"0X82838468" = { }
+"0X82838470" = { }
+"0X828629B8" = { }
+"0X828629C0" = { }
+"0X828629E0" = { }
+"0X828629E8" = { }
+"0X82862A08" = { }
+"0X82862A10" = { }
+"0X82862A18" = { }
+"0X82870310" = { }
+"0X82870390" = { }
+"0X828703F8" = { }
+"0X82870570" = { }
+"0X82870580" = { }
+"0X82870590" = { }
+"0X828705A0" = { }
+"0X828705A8" = { }
+"0X828705B0" = { }
+"0X82870D30" = { }
+"0X82870D38" = { }
+"0X82870D40" = { }
+"0X82870DC0" = { }
+"0X82870DC8" = { }
+"0X82870DD0" = { }
+"0X828712F8" = { }
+"0X82871300" = { }
+"0X82878C00" = { }
+"0X82878C08" = { }
+"0X82878C10" = { }
+"0X82878C20" = { }
+"0X828800F8" = { }
+"0X8288FA38" = { }
+"0X8288FA58" = { }
+"0X8288FAB0" = { }
+"0X8288FB00" = { }
+"0X8288FB10" = { }
+"0X8288FB20" = { }
+"0X8288FB30" = { }
+"0X8288FB40" = { }
+"0X8288FB78" = { }
+"0X8288FB88" = { }
+"0X8288FB98" = { }
+"0X8288FBA8" = { }
+"0X8288FBB8" = { }
+"0X8288FBC8" = { }
+"0X8288FBD8" = { }
+"0X8288FBE8" = { }
+"0X8288FBF8" = { }
+"0X8288FC08" = { }
+"0X8288FC18" = { }
+"0X82896DE0" = { }
+"0X828AF4D8" = { }
+"0X828AFE68" = { }
+"0X828C6920" = { }
+"0X828C69D8" = { }
+"0X828C6C48" = { }
+"0X828C6D20" = { }
+"0X828C6D48" = { }
+"0X828C6E50" = { }
+"0X828C6E60" = { }
+"0X828C6E70" = { }
+"0X828C6E80" = { }
+"0X828C6E90" = { }
+"0X828C6EA0" = { }
+"0X828C6EB0" = { }
+"0X828C6EC0" = { }
+"0X828C6ED0" = { }
+"0X828C6EE0" = { }
+"0X828C6EF0" = { }
+"0X828C6F00" = { }
+"0X828C6F10" = { }
+"0X828C6F20" = { }
+"0X828C6F30" = { }
+"0X828C6F40" = { }
+"0X828C70F8" = { }
+"0X828C7160" = { }
+"0X828C71D0" = { }
+"0X828C71F0" = { }
+"0X828C7220" = { }
+"0X82905FD0" = { }
+"0X8294ECC0" = { }
+"0X8294F058" = { }
+"0X8294F8A0" = { }
+"0X8294F8B8" = { }
+"0X8294FAA8" = { }
+"0X82950310" = { }
+"0X82950850" = { }
+"0X82950860" = { }
+"0X829525A8" = { }
+"0X829525B0" = { }
+"0X829525B8" = { }
+"0X829525C0" = { }
+"0X829525C8" = { }
+"0X829525D0" = { }
+"0X82955048" = { }
+"0X829E80C8" = { }
+"0X829EB028" = { }
+"0X829EB090" = { }
+"0X829EB0B8" = { }
+"0X829EB0E0" = { }
+"0X829EB108" = { }
+"0X829EB130" = { }
+"0X829EB1B8" = { }
+"0X829EB1E0" = { }
+"0X829EB298" = { }
+"0X829EB3C0" = { }
+"0X829EB3E0" = { }
+"0X829EB408" = { }
+"0X829EB430" = { }
+"0X829EB500" = { }
+"0X829EB538" = { }
+"0X829EB560" = { }
+"0X829EB5E8" = { }
+"0X829EB610" = { }
+"0X829EB658" = { }
+"0X829EB790" = { }
+"0X829EB880" = { }
+"0X829EB890" = { }
+"0X829EB8A0" = { }
+"0X829EB8B0" = { }
+"0X829EB8C0" = { }
+"0X829EB8D0" = { }
+"0X829EB8E0" = { }
+"0X829EB8F0" = { }
+"0X829EB900" = { }
+"0X829EB910" = { }
+"0X829EB920" = { }
+"0X829EB930" = { }
+"0X829EBFA0" = { }
+"0X829EBFC0" = { }
+"0X829EBFD8" = { }
+"0X829EC008" = { }
+"0X829EC030" = { }
+"0X829EC058" = { }
+"0X82A3F648" = { }
+"0X82A4DF18" = { }
+"0X82A4DF28" = { }
+"0X82A4DF48" = { }
+"0X82A4E0B0" = { }
+"0X82AA25B8" = { }
+"0X82AA25C8" = { }
+"0X82AA25E0" = { }
+"0X82AA2778" = { }
+"0X82AA2788" = { }
+"0X82AD0B60" = { }
+"0X82B2D510" = { }
+"0X82B2D6F8" = { }
+"0X82B2D890" = { }
+"0X82B2D8A0" = { }
+"0X82B722B8" = { }
+"0X82B72378" = { }
+"0X82B72398" = { }
+"0X82B72608" = { }
+"0X82B72618" = { }
+"0X82B72A98" = { }
+"0X82B72B70" = { }
+"0X82B72B88" = { }
+"0X82B72BA0" = { }
+"0X82B72BB8" = { }
+"0X82B72C38" = { }
+"0X82B8FEC8" = { }
+"0X82B8FEE0" = { }
+"0X82B8FF58" = { }
+"0X82BA2F78" = { }
+"0X82BA2F90" = { }
+"0X82BA2FA8" = { }
+"0X82BA2FC0" = { }
+"0X82BA2FD0" = { }
+"0X82BA2FE0" = { }
+"0X82BA2FF0" = { }
+"0X82BA3000" = { }
+"0X82BA3010" = { }
+"0X82BA3048" = { }
+"0X82BA3058" = { }
+"0X82BA3068" = { }
+"0X82BA3078" = { }
+"0X82BA3088" = { }
+"0X82BA3098" = { }
+"0X82BA30A8" = { }
+"0X82BA30B8" = { }
+"0X82BA30C8" = { }
+"0X82BA30D8" = { }
+"0X82BA30E8" = { }
+"0X82BA30F8" = { }
+"0X82BA3108" = { }
+"0X82BA3118" = { }
+"0X82BA3128" = { }
+"0X82BA3268" = { }
+"0X82BA3278" = { }
+"0X82BBFE18" = { }
+"0X82BF0C70" = { }
+"0X82BF0EB0" = { }
+"0X82BF0F88" = { }
+"0X82BF0FE8" = { }
+"0X82BF22A8" = { }
+"0X82C049E0" = { }
+"0X82C33ED0" = { }
+"0X82C33EE8" = { }
+"0X82CD5830" = { }
+"0X82CD5840" = { }
+"0X82CDC830" = { }
+"0X82D8A584" = { }
+"0X82D8A6FC" = { }
+"0X82DF43E8" = { }
+"0X82DF4410" = { }
+"0X82DF4438" = { }
+"0X82DF4460" = { }
+"0X82DF4898" = { }
+"0X82DF48A8" = { }
+"0X82DF48B8" = { }
+"0X82DF48C8" = { }
+"0X82DF48D8" = { }
+"0X82DF48E8" = { }
+"0X82DF48F8" = { }
+"0X82DF4908" = { }
+"0X82DF4918" = { }
+"0X82DF4928" = { }
+"0X82E6E69C" = { }
+"0X82E82320" = { }
+"0X82EB7D40" = { }
+"0X82FA3550" = { }
+"0X82FA36B0" = { }
+"0X82FA3748" = { }
+"0X82FBFB08" = { }
+"0X82FBFB28" = { }
+"0X82FBFB70" = { }
+"0X82FE8EB0" = { }
+"0X82FE8F70" = { }
+"0X82FE8F88" = { }
+"0X8302B778" = { }
+"0X8302B790" = { }
+"0X8302B7A8" = { }
+"0X8302B7C0" = { }
+"0X8302B7D8" = { }
+"0X8302B7F0" = { }
+"0X8302B808" = { }
+"0X8302B820" = { }
+"0X83103620" = { }
+"0X83103628" = { }
+"0X83103630" = { }
+"0X83103638" = { }
+"0X831036A0" = { }
+"0X831085E8" = { }
+"0X831085F0" = { }
+"0X83108600" = { }
+"0X83108608" = { }
+"0X83108610" = { }
+"0X831099C0" = { }
+"0X831099C8" = { }
+"0X831099D0" = { }
+"0X831099D8" = { }
+"0X831099E0" = { }
+"0X831099E8" = { }
+"0X831099F0" = { }
+"0X83183668" = { }
+"0X83183670" = { }
+"0X83183678" = { }
+"0X83183680" = { }
+"0X83183690" = { }
+"0X831836A0" = { }
+"0X831836B0" = { }
+"0X831836C0" = { }
+"0X831836D0" = { }
+"0X831836E0" = { }
+"0X831836F0" = { }
+"0X83183700" = { }
+"0X83183740" = { }
+"0X83183748" = { }
+"0X83183750" = { }
+"0X83183758" = { }
+"0X831837D0" = { }
+"0X831837E8" = { }
+"0X83183820" = { }
+"0X83183850" = { }
+"0X83183868" = { }
+"0X83183880" = { }
+"0X831838B8" = { }
+"0X831838D0" = { }
+"0X83249D50" = { }
+"0X83249D68" = { }
+"0X83249D80" = { }
+"0X83249D98" = { }
+"0X832F6F90" = { }
+
+# Built-in-code addresses in gaps (including 0x8317FAC0)
+"0X8300C8B0" = { }
+"0X8317FA90" = { }
+"0X8317FAC0" = { }
+"0X832499B0" = { }

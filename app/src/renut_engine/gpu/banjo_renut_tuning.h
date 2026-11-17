@@ -480,6 +480,41 @@ void BeforeDeviceDestroyed();
 void StatsGameFrame();                     // a D3DDevice_Swap (game thread)
 void StatsRenderThreadFrame(double busy_ms);  // the render thread's frame (render thread)
 void StatsGpuFrame(double ms);             // a frame's GPU time
+void NoteGameFrameTiming();                // game-frame interval histogram + Switch hitch range
+
+// Per-render-frame workload counters (render thread only; drained at StatsRenderThreadFrame).
+struct WorkloadFrame {
+  uint64_t draws = 0;
+  uint64_t vertices = 0;
+  uint64_t memexport_draws = 0;
+  uint64_t stream_converts = 0;
+  uint64_t stream_convert_bytes = 0;
+  uint64_t submits = 0;
+  uint64_t resolves = 0;
+  uint64_t tex_uploads = 0;
+  uint64_t tex_upload_bytes = 0;
+};
+extern WorkloadFrame g_workload_frame;
+[[gnu::always_inline]] inline void NoteWorkloadDraw(uint64_t verts, bool memexport) {
+  ++g_workload_frame.draws;
+  g_workload_frame.vertices += verts;
+  if (memexport)
+    ++g_workload_frame.memexport_draws;
+}
+[[gnu::always_inline]] inline void NoteWorkloadStreamConvert(uint64_t bytes) {
+  ++g_workload_frame.stream_converts;
+  g_workload_frame.stream_convert_bytes += bytes;
+}
+[[gnu::always_inline]] inline void NoteWorkloadSubmit() {
+  ++g_workload_frame.submits;
+}
+[[gnu::always_inline]] inline void NoteWorkloadResolve() {
+  ++g_workload_frame.resolves;
+}
+[[gnu::always_inline]] inline void NoteWorkloadTexUpload(uint64_t bytes) {
+  ++g_workload_frame.tex_uploads;
+  g_workload_frame.tex_upload_bytes += bytes;
+}
 
 // banjo_renut_pmull_hash: chosen once, before the renderer's first draw (BeforeDeviceCreated), after a self-test.
 extern bool g_pmull_hash;

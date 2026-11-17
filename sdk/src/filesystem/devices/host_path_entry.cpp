@@ -34,6 +34,8 @@ HostPathEntry* HostPathEntry::Create(Device* device, Entry* parent,
                                      const std::filesystem::path& full_path,
                                      rex::filesystem::FileInfo file_info) {
   std::string name = rex::path_to_utf8(file_info.name);
+  const uint64_t raw_disk_size =
+      (file_info.type == rex::filesystem::FileInfo::Type::kDirectory) ? 0 : file_info.total_size;
   /*
    * rr6-nx (2026-11-10): NAME.lz4b is the game's NAME (rex/filesystem/lz4_blocks.h), with the size of the file it
    * holds, unless a plain NAME lies next to it (an install extracted over an older one): the plain file wins and the
@@ -58,6 +60,7 @@ HostPathEntry* HostPathEntry::Create(Device* device, Entry* parent,
   auto path = rex::string::utf8_join_guest_paths(parent->path(), name);
   auto entry = new HostPathEntry(device, parent, path, full_path);
   entry->lz4_blocks_ = lz4_blocks;
+  entry->disk_size_ = raw_disk_size;
   if (lz4_blocks) {
     file_info.total_size = size_t(lz4_size);
   }
@@ -71,6 +74,14 @@ HostPathEntry* HostPathEntry::Create(Device* device, Entry* parent,
     entry->attributes_ = kFileAttributeNormal;
     if (device->is_read_only()) {
       entry->attributes_ |= kFileAttributeReadOnly;
+      static constexpr std::string_view kTransGame = "transgame.xxx";
+      if (name.size() == kTransGame.size() &&
+          std::equal(name.begin(), name.end(), kTransGame.begin(),
+                     [](char a, char b) {
+                       return std::tolower(static_cast<unsigned char>(a)) == b;
+                     })) {
+        file_info.total_size = GetPatchedTransGameXxxSize(full_path, file_info.total_size);
+      }
     }
     entry->size_ = file_info.total_size;
     entry->allocation_size_ = rex::round_up(file_info.total_size, device->bytes_per_sector());

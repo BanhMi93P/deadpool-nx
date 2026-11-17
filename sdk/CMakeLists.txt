@@ -149,6 +149,7 @@ add_compile_options(
     $<$<CONFIG:RELEASE>:-O3>
     $<$<CONFIG:RELEASE>:-DNDEBUG>
     -fno-char8_t
+    $<$<AND:$<NOT:$<BOOL:${REXGLUE_PLATFORM_SWITCH}>>,$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>>:-march=x86-64-v2>
 )
 
 # Platform detection (supports AMD64 and ARM64)

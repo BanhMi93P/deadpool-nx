@@ -192,6 +192,7 @@ bool ReXApp::SetupEnvironment() {
     rex::cvar::LoadConfigString(built_in, "built-in defaults");
   if (std::filesystem::exists(config_path_))
     rex::cvar::LoadConfig(config_path_);
+  OnPostConfig();
 #if REX_PLATFORM_SWITCH
   // banjo-nx (2026-10-27): the four-core mode's keys as the toml sets them (main read them before the toml was loaded:
   // the command line's and the defaults only), and the forwarder's NPDM for the toml's program id.

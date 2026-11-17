@@ -18,24 +18,25 @@
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
-#include <rex/perf/counter.h>
+#include <rex/kernel/xboxkrnl/threading.h>
 #include <rex/literals.h>
 #include <rex/logging.h>
 #include <rex/math.h>
-#include <rex/ppc/context.h>
+#include <rex/perf/counter.h>
 #include <rex/platform/exceptions.h>
+#include <rex/ppc/context.h>
 #include <rex/runtime.h>
 #include <rex/stream.h>
-#include <rex/system/kernel_state.h>
 #include <rex/system/function_dispatcher.h>
+#include <rex/system/kernel_state.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/user_module.h>
-#include <rex/kernel/xboxkrnl/threading.h>
 #include <rex/system/xevent.h>
 #include <rex/system/xmutant.h>
 #include <rex/system/xthread.h>
 #include <rex/thread.h>
 #include <rex/vec128.h>
+
 
 #if REX_PLATFORM_SWITCH
 #include <string_view>
@@ -49,16 +50,21 @@ REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
 REXCVAR_DEFINE_BOOL(ignore_thread_affinities, true, "Kernel",
                     "Ignores game-specified thread affinities");
 
-// sasrt-nx (2026-11-09; port 58): a guest thread's host stack, 16 MB (Xenia's) unless the key says less: on the Switch
-// it is heap (SASRT's 31 guest threads at once held ~500 MB). The profiler's thread lines give each thread's deepest
-// sampled stack (switch_profile_stacks) to choose from: measure a game before lowering it. threading_posix.cpp pools
-// stacks of this size and more.
-// renut-ultimate (2026-11-12, port 112, the user's choice: "8mb is meant to be a good trade off for the base"): 8 MB by
-// default, half the heap a guest thread held (SASRT's 31 threads at once: ~250 MB instead of ~500). A game that needs
-// more (a deep recursion: its deepest sampled stack near 8 MB) sets 16, Xenia's, in its toml.
+// sasrt-nx (2026-11-09; port 58): a guest thread's host stack, 16 MB (Xenia's)
+// unless the key says less: on the Switch it is heap (SASRT's 31 guest threads
+// at once held ~500 MB). The profiler's thread lines give each thread's deepest
+// sampled stack (switch_profile_stacks) to choose from: measure a game before
+// lowering it. threading_posix.cpp pools stacks of this size and more.
+// renut-ultimate (2026-11-12, port 112, the user's choice: "8mb is meant to be
+// a good trade off for the base"): 8 MB by default, half the heap a guest
+// thread held (SASRT's 31 threads at once: ~250 MB instead of ~500). A game
+// that needs more (a deep recursion: its deepest sampled stack near 8 MB) sets
+// 16, Xenia's, in its toml.
 REXCVAR_DEFINE_INT32(switch_guest_stack_mb, 8, "Threading",
-                     "The host stack of each guest thread, in MB (8 by default, the base's trade-off; 16 as Xenia for a "
-                     "game that needs more; heap on the Switch). Lower only after the profiler's deepest sampled stack "
+                     "The host stack of each guest thread, in MB (8 by "
+                     "default, the base's trade-off; 16 as Xenia for a "
+                     "game that needs more; heap on the Switch). Lower only "
+                     "after the profiler's deepest sampled stack "
                      "says so, with a wide margin")
     .range(2, 64)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -69,20 +75,22 @@ static size_t GuestHostStackBytes() {
 
 #if REX_PLATFORM_SWITCH
 namespace {
-// banjo-nx (2026-10-20, from sa2-nx, RexSetGuestThreadCoreLayout): the guest threads' cores besides the main thread's (0: the
-// process's, as before), and the preferred one among them, for the threads created from then on.
+// banjo-nx (2026-10-20, from sa2-nx, RexSetGuestThreadCoreLayout): the guest
+// threads' cores besides the main thread's (0: the process's, as before), and
+// the preferred one among them, for the threads created from then on.
 std::atomic<uint32_t> g_guest_core_mask{0};
 std::atomic<int32_t> g_guest_core_preferred{-1};
-// bejeweled3-nx (2026-10-22, RexSetGuestThreadCoresAtStart): the core the guest main thread pins itself to when it
-// starts (-1: none).
+// bejeweled3-nx (2026-10-22, RexSetGuestThreadCoresAtStart): the core the guest
+// main thread pins itself to when it starts (-1: none).
 std::atomic<int32_t> g_guest_main_core{-1};
-// dishonored-nx (sa2-nx's, 2026-10-20; port 103): each guest thread applies RexSetGuestThreadCoreLayout's layout itself:
-// the layout's generation (0: none set), and per thread the generation it applied and what it is (0 not a guest thread,
-// 1 the main thread, 2 another guest thread).
+// dishonored-nx (sa2-nx's, 2026-10-20; port 103): each guest thread applies
+// RexSetGuestThreadCoreLayout's layout itself: the layout's generation (0: none
+// set), and per thread the generation it applied and what it is (0 not a guest
+// thread, 1 the main thread, 2 another guest thread).
 std::atomic<uint32_t> g_guest_layout_gen{0};
 thread_local uint32_t t_layout_applied = 0;
 thread_local uint8_t t_guest_kind = 0;
-}  // namespace
+} // namespace
 #endif
 
 namespace rex::system {
@@ -95,16 +103,15 @@ using namespace rex::literals;
 
 uint32_t next_xthread_id_ = 0;
 
-XThread::XThread(KernelState* kernel_state)
+XThread::XThread(KernelState *kernel_state)
     : XObject(kernel_state, kObjectType), guest_thread_(true) {}
 
-XThread::XThread(KernelState* kernel_state, uint32_t stack_size, uint32_t xapi_thread_startup,
-                 uint32_t start_address, uint32_t start_context, uint32_t creation_flags,
+XThread::XThread(KernelState *kernel_state, uint32_t stack_size,
+                 uint32_t xapi_thread_startup, uint32_t start_address,
+                 uint32_t start_context, uint32_t creation_flags,
                  bool guest_thread, bool main_thread, uint32_t guest_process)
-    : XObject(kernel_state, kObjectType),
-      thread_id_(++next_xthread_id_),
-      guest_thread_(guest_thread),
-      main_thread_(main_thread),
+    : XObject(kernel_state, kObjectType), thread_id_(++next_xthread_id_),
+      guest_thread_(guest_thread), main_thread_(main_thread),
       apc_lock_old_irql_(0) {
   creation_params_.stack_size = stack_size;
   creation_params_.xapi_thread_startup = xapi_thread_startup;
@@ -151,26 +158,22 @@ XThread::~XThread() {
   }
 }
 
-thread_local XThread* current_xthread_tls_ = nullptr;
+thread_local XThread *current_xthread_tls_ = nullptr;
 
 namespace {
 
-XThread* GetBoundCurrentXThread() {
-  return current_xthread_tls_;
-}
+XThread *GetBoundCurrentXThread() { return current_xthread_tls_; }
 
-}  // namespace
+} // namespace
 
-bool XThread::IsInThread() {
-  return GetBoundCurrentXThread() != nullptr;
-}
+bool XThread::IsInThread() { return GetBoundCurrentXThread() != nullptr; }
 
-bool XThread::IsInThread(XThread* other) {
+bool XThread::IsInThread(XThread *other) {
   return GetBoundCurrentXThread() == other;
 }
 
-XThread* XThread::GetCurrentThread() {
-  XThread* thread = GetBoundCurrentXThread();
+XThread *XThread::GetCurrentThread() {
+  XThread *thread = GetBoundCurrentXThread();
   if (!thread) {
     assert_always("Attempting to use kernel stuff from a non-kernel thread");
   }
@@ -178,7 +181,7 @@ XThread* XThread::GetCurrentThread() {
 }
 
 void XThread::CheckTitleTermination() {
-  XThread* self = GetBoundCurrentXThread();
+  XThread *self = GetBoundCurrentXThread();
   if (self && self->is_guest_thread() && self->is_running() &&
       self->kernel_state()->is_terminating_title()) {
     // Unwind cleanly at this safe point. Does not return.
@@ -187,28 +190,26 @@ void XThread::CheckTitleTermination() {
 }
 
 uint32_t XThread::GetCurrentThreadHandle() {
-  XThread* thread = XThread::GetCurrentThread();
+  XThread *thread = XThread::GetCurrentThread();
   return thread->handle();
 }
 
 uint32_t XThread::GetCurrentThreadId() {
-  XThread* thread = XThread::GetCurrentThread();
+  XThread *thread = XThread::GetCurrentThread();
   return thread->guest_object<X_KTHREAD>()->thread_id;
 }
 
 uint32_t XThread::GetLastError() {
-  XThread* thread = XThread::GetCurrentThread();
+  XThread *thread = XThread::GetCurrentThread();
   return thread->last_error();
 }
 
 void XThread::SetLastError(uint32_t error_code) {
-  XThread* thread = XThread::GetCurrentThread();
+  XThread *thread = XThread::GetCurrentThread();
   thread->set_last_error(error_code);
 }
 
-uint32_t XThread::last_error() {
-  return guest_object<X_KTHREAD>()->last_error;
-}
+uint32_t XThread::last_error() { return guest_object<X_KTHREAD>()->last_error; }
 
 void XThread::set_last_error(uint32_t error_code) {
   guest_object<X_KTHREAD>()->last_error = error_code;
@@ -230,7 +231,7 @@ static uint8_t GetFakeCpuNumber(uint8_t proc_mask) {
   // NOTE: proc_mask is logical processors, not physical processors or cores.
   if (!proc_mask) {
     next_cpu = (next_cpu + 1) % 6;
-    return next_cpu;  // is this reasonable?
+    return next_cpu; // is this reasonable?
     // TODO(Triang3l): Does the following apply here?
     // https://docs.microsoft.com/en-us/windows/win32/dxtecharts/coding-for-multiple-cores
     // "On Xbox 360, you must explicitly assign software threads to a particular
@@ -249,8 +250,9 @@ void XThread::InitializeGuestObject() {
   auto guest_thread = guest_object<X_KTHREAD>();
   uint32_t guest_ptr = guest_object();
 
-  guest_thread->header.type = 6;  // ThreadObject
-  guest_thread->suspend_count = (creation_params_.creation_flags & X_CREATE_SUSPENDED) ? 1 : 0;
+  guest_thread->header.type = 6; // ThreadObject
+  guest_thread->suspend_count =
+      (creation_params_.creation_flags & X_CREATE_SUSPENDED) ? 1 : 0;
 
   // Self-referencing pointers for wait timeout timer/block
   guest_thread->unk_10 = guest_ptr + 0x010;
@@ -273,7 +275,8 @@ void XThread::InitializeGuestObject() {
   guest_thread->apc_lists[0].Initialize(memory());
   guest_thread->apc_lists[1].Initialize(memory());
 
-  // Set process pointer - use guest_process if provided, else default to title process.
+  // Set process pointer - use guest_process if provided, else default to title
+  // process.
   uint32_t process_ptr = creation_params_.guest_process
                              ? creation_params_.guest_process
                              : kernel_state_->process_info_block_address();
@@ -285,20 +288,23 @@ void XThread::InitializeGuestObject() {
   guest_thread->a_prcb_ptr = kpcrb;
   guest_thread->another_prcb_ptr = kpcrb;
 
-  // PPCContext for spinlock helpers (valid before thread runs; r13 set at construction).
-  auto* ctx = thread_state_->context();
+  // PPCContext for spinlock helpers (valid before thread runs; r13 set at
+  // construction).
+  auto *ctx = thread_state_->context();
 
   // Set per-thread process type and link into process thread list.
   if (process_ptr) {
-    auto target_process = memory()->TranslateVirtual<X_KPROCESS*>(process_ptr);
+    auto target_process = memory()->TranslateVirtual<X_KPROCESS *>(process_ptr);
     guest_thread->process_type = target_process->process_type;
     guest_thread->process_type_dup = target_process->process_type;
 
-    auto old_irql =
-        kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &target_process->thread_list_spinlock);
-    util::XeInsertTailList(&target_process->thread_list, &guest_thread->process_threads, memory());
+    auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(
+        ctx, &target_process->thread_list_spinlock);
+    util::XeInsertTailList(&target_process->thread_list,
+                           &guest_thread->process_threads, memory());
     target_process->thread_count = target_process->thread_count + 1;
-    kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &target_process->thread_list_spinlock, old_irql);
+    kernel::xboxkrnl::xeKeKfReleaseSpinLock(
+        ctx, &target_process->thread_list_spinlock, old_irql);
   } else {
     guest_thread->process_type = X_PROCTYPE_USER;
     guest_thread->process_type_dup = X_PROCTYPE_USER;
@@ -310,8 +316,10 @@ void XThread::InitializeGuestObject() {
   guest_thread->create_time = chrono::Clock::QueryGuestSystemTime();
 
   // Initialize timer_list as self-referencing
-  guest_thread->timer_list.flink_ptr = guest_ptr + offsetof(X_KTHREAD, timer_list);
-  guest_thread->timer_list.blink_ptr = guest_ptr + offsetof(X_KTHREAD, timer_list);
+  guest_thread->timer_list.flink_ptr =
+      guest_ptr + offsetof(X_KTHREAD, timer_list);
+  guest_thread->timer_list.blink_ptr =
+      guest_ptr + offsetof(X_KTHREAD, timer_list);
 
   guest_thread->thread_id = thread_id_;
   guest_thread->start_address = creation_params_.start_address;
@@ -329,15 +337,17 @@ bool XThread::AllocateStack(uint32_t size) {
   auto heap = memory()->LookupHeap(kStackAddressRangeBegin);
 
   auto alignment = heap->page_size();
-  auto padding = heap->page_size() * 2;  // Guard page size * 2
+  auto padding = heap->page_size() * 2; // Guard page size * 2
   size = rex::round_up(size, alignment);
   auto actual_size = size + padding;
 
   uint32_t address = 0;
-  if (!heap->AllocRange(kStackAddressRangeBegin, kStackAddressRangeEnd, actual_size, alignment,
-                        memory::kMemoryAllocationReserve | memory::kMemoryAllocationCommit,
-                        memory::kMemoryProtectRead | memory::kMemoryProtectWrite, false,
-                        &address)) {
+  if (!heap->AllocRange(
+          kStackAddressRangeBegin, kStackAddressRangeEnd, actual_size,
+          alignment,
+          memory::kMemoryAllocationReserve | memory::kMemoryAllocationCommit,
+          memory::kMemoryProtectRead | memory::kMemoryProtectWrite, false,
+          &address)) {
     return false;
   }
 
@@ -379,21 +389,32 @@ namespace {
 // the GPU and the kernel's own workers. This is the scheme MarathonRecomp-NX
 // ships with. Host threads are told apart by the name their owner gives them
 // before Create().
-int SwitchPriorityFor(bool guest_thread, std::string_view name) {
+bool IsDeadpoolAudioGuestThread(uint32_t start_address) {
+  return start_address == 0x83100700 || start_address == 0x82D27FD8 ||
+         start_address == 0x82D7FD28 || start_address == 0x82D7A390;
+}
+
+int SwitchPriorityFor(bool guest_thread, std::string_view name,
+                      uint32_t start_address = 0) {
   if (guest_thread) {
+    // Deadpool Wwise Audio Mixer / XAudio render threads: must run at audio
+    // priority (0x2B).
+    if (IsDeadpoolAudioGuestThread(start_address)) {
+      return REX_SWITCH_PRIO_AUDIO;
+    }
     return REX_SWITCH_PRIO_GUEST;
   }
-  // set_name() stores the name with the handle appended ("Audio Worker (F8000014)"),
-  // so the prefix is compared. With an exact comparison the Audio Worker and the
-  // XMA Decoder stayed at the presentation priority (0x2C) instead of the audio one
-  // (0x2B), as rex_profile.log showed on the console.
+  // set_name() stores the name with the handle appended ("Audio Worker
+  // (F8000014)"), so the prefix is compared. With an exact comparison the Audio
+  // Worker and the XMA Decoder stayed at the presentation priority (0x2C)
+  // instead of the audio one (0x2B), as rex_profile.log showed on the console.
   if (name.starts_with("Audio Worker") || name.starts_with("XMA Decoder")) {
     return REX_SWITCH_PRIO_AUDIO;
   }
-  return REX_SWITCH_PRIO_PRESENT;  // GPU Commands, GPU VSync, Kernel Dispatch
+  return REX_SWITCH_PRIO_PRESENT; // GPU Commands, GPU VSync, Kernel Dispatch
 }
 
-}  // namespace
+} // namespace
 #endif
 
 X_STATUS XThread::Create() {
@@ -415,7 +436,7 @@ X_STATUS XThread::Create() {
 
   // Allocate TLS block.
   // Games will specify a certain number of 4b slots that each thread will get.
-  xex2_opt_tls_info* tls_header = nullptr;
+  xex2_opt_tls_info *tls_header = nullptr;
   auto module = kernel_state_->GetExecutableModule();
   if (module) {
     module->GetOptHeader(XEX_HEADER_TLS_INFO, &tls_header);
@@ -446,7 +467,8 @@ X_STATUS XThread::Create() {
   if (tls_extended_size) {
     // If game has extended data, copy in the default values.
     assert_not_zero(tls_header->raw_data_address);
-    memory()->Copy(tls_static_address_, tls_header->raw_data_address, tls_header->raw_data_size);
+    memory()->Copy(tls_static_address_, tls_header->raw_data_address,
+                   tls_header->raw_data_size);
   }
 
   // Allocate thread state block from heap.
@@ -471,18 +493,19 @@ X_STATUS XThread::Create() {
   }
 
   // Create thread state - needed for interrupt callbacks and kernel exports
-  thread_state_ =
-      std::make_unique<runtime::ThreadState>(thread_id_, stack_base_, pcr_address_, memory());
+  thread_state_ = std::make_unique<runtime::ThreadState>(
+      thread_id_, stack_base_, pcr_address_, memory());
 
-  REXSYS_NOISY_DEBUG("XThread{:08X} ({:X}) Stack: {:08X}-{:08X}", handle(), thread_id_,
-                     stack_limit_, stack_base_);
+  REXSYS_NOISY_DEBUG("XThread{:08X} ({:X}) Stack: {:08X}-{:08X}", handle(),
+                     thread_id_, stack_limit_, stack_base_);
 
-  uint8_t cpu_index = GetFakeCpuNumber(static_cast<uint8_t>(creation_params_.creation_flags >> 24));
+  uint8_t cpu_index = GetFakeCpuNumber(
+      static_cast<uint8_t>(creation_params_.creation_flags >> 24));
 
   // Initialize the KTHREAD object.
   InitializeGuestObject();
 
-  X_KPCR* pcr = memory()->TranslateVirtual<X_KPCR*>(pcr_address_);
+  X_KPCR *pcr = memory()->TranslateVirtual<X_KPCR *>(pcr_address_);
 
   pcr->tls_ptr = tls_static_address_;
   pcr->pcr_ptr = pcr_address_;
@@ -500,36 +523,62 @@ X_STATUS XThread::Create() {
   RetainHandle();
 
   rex::thread::Thread::CreationParameters params;
-  params.stack_size = GuestHostStackBytes();  // Allocate a big host stack (port 58: switch_guest_stack_mb).
+  params.stack_size = GuestHostStackBytes(); // Allocate a big host stack (port
+                                             // 58: switch_guest_stack_mb).
   params.create_suspended = true;
   thread_ = rex::thread::Thread::Create(params, [this]() {
     rex::initialize_seh_thread();
 #if REX_PLATFORM_SWITCH
-    RexSwitchSetCurrentThreadPriority(SwitchPriorityFor(guest_thread_, thread_name_));
-    // banjo-nx (2026-10-27): with four cores granted, the audio threads go to the system core (NetherSX2_nx's
-    // layout: threading_switch.h, banjo_system_core), at the same priority (0x2B; the output thread is above them).
-    // (The XMA Decoder only with banjo_system_core_xma: the first four-core console run had core 3 full.)
-    if (!guest_thread_ && (std::string_view(thread_name_).starts_with("Audio Worker") ||
-                           (std::string_view(thread_name_).starts_with("XMA Decoder") && RexSwitchSystemCoreXma()))) {
+    const bool audio_guest =
+        guest_thread_ &&
+        IsDeadpoolAudioGuestThread(creation_params_.start_address);
+    RexSwitchSetCurrentThreadPriority(SwitchPriorityFor(
+        guest_thread_, thread_name_, creation_params_.start_address));
+    // banjo-nx (2026-10-27): with four cores granted, the audio threads go to
+    // the system core (NetherSX2_nx's layout: threading_switch.h,
+    // banjo_system_core), at the same priority (0x2B; the output thread is
+    // above them). (The XMA Decoder only with banjo_system_core_xma: the first
+    // four-core console run had core 3 full.)
+    if (audio_guest) {
+      if (!RexSwitchMoveCurrentThreadToSystemCore(REX_SWITCH_PRIO_AUDIO)) {
+        // Keep 0x2B audio mixer off Core 1 (render_thread, 0x2C) in 3-core
+        // mode.
+        RexSwitchSetCurrentThreadMask(2, 0x5);
+      }
+    } else if (!guest_thread_ &&
+               (std::string_view(thread_name_).starts_with("Audio Worker") ||
+                (std::string_view(thread_name_).starts_with("XMA Decoder") &&
+                 RexSwitchSystemCoreXma()))) {
       (void)RexSwitchMoveCurrentThreadToSystemCore(REX_SWITCH_PRIO_AUDIO);
     }
-    // banjo-nx (2026-10-20, from sa2-nx): known to the pthread layer by its kernel handle, so another thread can set its cores
-    // (RexSetGuestThreadCoreLayout: the registry was empty, and setting another thread's mask failed quietly).
+    // banjo-nx (2026-10-20, from sa2-nx): known to the pthread layer by its
+    // kernel handle, so another thread can set its cores
+    // (RexSetGuestThreadCoreLayout: the registry was empty, and setting another
+    // thread's mask failed quietly).
     RexSwitchRegisterCurrentThread();
-    // banjo-nx (2026-10-20, from sa2-nx): a guest thread made after the layout was set takes the other guest threads' cores.
-    if (guest_thread_ && !main_thread_) {
-      t_layout_applied = g_guest_layout_gen.load(std::memory_order_acquire);  // dishonored-nx (port 103): applied here
+    // banjo-nx (2026-10-20, from sa2-nx): a guest thread made after the layout
+    // was set takes the other guest threads' cores.
+    if (guest_thread_ && !main_thread_ && !audio_guest) {
+      t_layout_applied = g_guest_layout_gen.load(
+          std::memory_order_acquire); // dishonored-nx (port 103): applied here
       const uint32_t mask = g_guest_core_mask.load(std::memory_order_acquire);
       if (mask)
-        RexSwitchSetCurrentThreadMask(g_guest_core_preferred.load(std::memory_order_relaxed), mask);
+        RexSwitchSetCurrentThreadMask(
+            g_guest_core_preferred.load(std::memory_order_relaxed), mask);
     }
-    // bejeweled3-nx (2026-10-22): the guest main thread takes its own core, set by itself as it starts (no thread is
-    // moved while it runs: RexSetGuestThreadCoreLayout's way of moving them hung Peggle and Banjo on the console).
+    // bejeweled3-nx (2026-10-22): the guest main thread takes its own core, set
+    // by itself as it starts (no thread is moved while it runs:
+    // RexSetGuestThreadCoreLayout's way of moving them hung Peggle and Banjo on
+    // the console).
     if (guest_thread_ && main_thread_) {
       const int32_t core = g_guest_main_core.load(std::memory_order_acquire);
-      if (core >= 0) RexSwitchSetCurrentThreadMask(core, uint64_t(1) << core);
+      if (core >= 0)
+        RexSwitchSetCurrentThreadMask(core, uint64_t(1) << core);
     }
-    t_guest_kind = guest_thread_ ? (main_thread_ ? 1 : 2) : 0;  // dishonored-nx (port 103): ApplyGuestCoreLayoutAtWait
+    t_guest_kind =
+        (guest_thread_ && !audio_guest)
+            ? (main_thread_ ? 1 : 2)
+            : 0; // dishonored-nx (port 103): ApplyGuestCoreLayoutAtWait
 #endif
     runtime::ThreadState::Bind(thread_state_.get());
 
@@ -553,7 +602,9 @@ X_STATUS XThread::Create() {
     PROFILE_THREAD_EXIT();
 
 #if REX_PLATFORM_SWITCH
-    RexSwitchUnregisterCurrentThread();  // banjo-nx (2026-10-20, from sa2-nx): see RexSwitchRegisterCurrentThread above
+    RexSwitchUnregisterCurrentThread(); // banjo-nx (2026-10-20, from sa2-nx):
+                                        // see RexSwitchRegisterCurrentThread
+                                        // above
 #endif
 
     // Release the self-reference to the thread.
@@ -568,7 +619,14 @@ X_STATUS XThread::Create() {
 
   // Set the thread name based on host ID (for easier debugging).
   if (thread_name_.empty()) {
-    set_name(fmt::format("XThread{:04X}", thread_->system_id()));
+    if (creation_params_.start_address == 0x83100700 ||
+        creation_params_.start_address == 0x82D27FD8 ||
+        creation_params_.start_address == 0x82D7FD28 ||
+        creation_params_.start_address == 0x82D7A390) {
+      set_name(fmt::format("AudioMixer{:04X}", thread_->system_id()));
+    } else {
+      set_name(fmt::format("XThread{:04X}", thread_->system_id()));
+    }
   }
 
 #if !REX_PLATFORM_SWITCH
@@ -583,7 +641,8 @@ X_STATUS XThread::Create() {
   // the current CPU in KPCR and KTHREAD.
   SetActiveCpu(cpu_index);
 
-  // TODO(tomc): do we need thread notifications (related to processor thread management)?
+  // TODO(tomc): do we need thread notifications (related to processor thread
+  // management)?
 
   if ((creation_params_.creation_flags & X_CREATE_SUSPENDED) == 0) {
     // Start the thread now that we're all setup.
@@ -609,24 +668,27 @@ X_STATUS XThread::Exit(int exit_code) {
   RundownAPCs();
 
   // Set exit code.
-  X_KTHREAD* thread = guest_object<X_KTHREAD>();
+  X_KTHREAD *thread = guest_object<X_KTHREAD>();
   thread->header.signal_state = 1;
   thread->exit_status = exit_code;
 
   // Unlink thread from process thread list.
   uint32_t process_guest = thread->process;
   if (process_guest) {
-    auto* ctx = thread_state_->context();
-    auto kprocess = memory()->TranslateVirtual<X_KPROCESS*>(process_guest);
-    auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kprocess->thread_list_spinlock);
+    auto *ctx = thread_state_->context();
+    auto kprocess = memory()->TranslateVirtual<X_KPROCESS *>(process_guest);
+    auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(
+        ctx, &kprocess->thread_list_spinlock);
     util::XeRemoveEntryList(&thread->process_threads, memory());
     kprocess->thread_count = kprocess->thread_count - 1;
-    kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &kprocess->thread_list_spinlock, old_irql);
+    kernel::xboxkrnl::xeKeKfReleaseSpinLock(
+        ctx, &kprocess->thread_list_spinlock, old_irql);
   }
 
   kernel_state_->OnThreadExit(this);
 
-  // TODO(tomc): do we need thread notifications (related to processor thread management)?
+  // TODO(tomc): do we need thread notifications (related to processor thread
+  // management)?
 
   // The guest stack belongs to the thread's execution lifetime, not the handle
   // lifetime. Games can keep thread handles after exit; holding the stack until
@@ -650,11 +712,12 @@ X_STATUS XThread::Terminate(int exit_code) {
   // TODO(benvanik): inform the profiler that this thread is exiting.
 
   // Set exit code.
-  X_KTHREAD* thread = guest_object<X_KTHREAD>();
+  X_KTHREAD *thread = guest_object<X_KTHREAD>();
   thread->header.signal_state = 1;
   thread->exit_status = exit_code;
 
-  // TODO(tomc): do we need thread notifications (related to processor thread management)?
+  // TODO(tomc): do we need thread notifications (related to processor thread
+  // management)?
 
   running_ = false;
   if (XThread::IsInThread(this)) {
@@ -674,8 +737,8 @@ X_STATUS XThread::Terminate(int exit_code) {
 }
 
 void XThread::Execute() {
-  REXSYS_NOISY_DEBUG("Execute thid {} (handle={:08X}, '{}', native={:08X})", thread_id_, handle(),
-                     thread_name_, thread_->system_id());
+  REXSYS_NOISY_DEBUG("Execute thid {} (handle={:08X}, '{}', native={:08X})",
+                     thread_id_, handle(), thread_name_, thread_->system_id());
 
   // Let the kernel know we are starting.
   kernel_state_->OnThreadExecute(this);
@@ -706,22 +769,23 @@ void XThread::Execute() {
   // In rexglue, guest code is compiled ahead of time and called directly.
   // The start_address points to a 32bit guest address, for which the function
   // dispatcher maintains a lookup table to retrieve the host function pointer.
-  auto* runtime = Runtime::instance();
+  auto *runtime = Runtime::instance();
   if (!runtime || !runtime->function_dispatcher()) {
     REXSYS_ERROR("XThread::Execute - Runtime not initialized");
     return;
   }
 
-  auto* dispatcher = runtime->function_dispatcher();
-  auto* memory = runtime->memory();
-  PPCFunc* func = dispatcher->GetFunction(address);
+  auto *dispatcher = runtime->function_dispatcher();
+  auto *memory = runtime->memory();
+  PPCFunc *func = dispatcher->GetFunction(address);
   if (!func) {
-    REXSYS_ERROR("XThread::Execute - No function registered at {:08X}", address);
+    REXSYS_ERROR("XThread::Execute - No function registered at {:08X}",
+                 address);
     return;
   }
 
-  auto* ctx = thread_state_->context();
-  uint8_t* base = memory->virtual_membase();
+  auto *ctx = thread_state_->context();
+  uint8_t *base = memory->virtual_membase();
 
   // Pass arguments in r3, r4, ... per PPC calling convention
   if (args.size() > 0)
@@ -774,16 +838,17 @@ void XThread::LeaveCriticalRegion() {
 
 void XThread::LockApc() {
   auto kthread = guest_object<X_KTHREAD>();
-  apc_lock_old_irql_ =
-      kernel::xboxkrnl::xeKeKfAcquireSpinLock(thread_state_->context(), &kthread->apc_lock);
+  apc_lock_old_irql_ = kernel::xboxkrnl::xeKeKfAcquireSpinLock(
+      thread_state_->context(), &kthread->apc_lock);
 }
 
 void XThread::UnlockApc(bool queue_delivery) {
   auto kthread = guest_object<X_KTHREAD>();
   auto mem = memory();
-  bool needs_apc = !kthread->apc_lists[0].empty(mem) || !kthread->apc_lists[1].empty(mem);
-  kernel::xboxkrnl::xeKeKfReleaseSpinLock(thread_state_->context(), &kthread->apc_lock,
-                                          apc_lock_old_irql_);
+  bool needs_apc =
+      !kthread->apc_lists[0].empty(mem) || !kthread->apc_lists[1].empty(mem);
+  kernel::xboxkrnl::xeKeKfReleaseSpinLock(
+      thread_state_->context(), &kthread->apc_lock, apc_lock_old_irql_);
   if (needs_apc && queue_delivery) {
     // Match Edge/Canary behavior: callback is only a wakeup hint.
     // User APC execution happens on alertable wait return paths.
@@ -791,30 +856,33 @@ void XThread::UnlockApc(bool queue_delivery) {
   }
 }
 
-void XThread::EnqueueApc(uint32_t normal_routine, uint32_t normal_context, uint32_t arg1,
-                         uint32_t arg2) {
+void XThread::EnqueueApc(uint32_t normal_routine, uint32_t normal_context,
+                         uint32_t arg1, uint32_t arg2) {
   uint32_t apc_ptr = memory()->SystemHeapAlloc(XAPC::kSize);
   if (!apc_ptr) {
-    REXSYS_WARN("EnqueueApc: allocation failed (thid={}, normal={:08X})", thread_id_,
-                normal_routine);
+    REXSYS_WARN("EnqueueApc: allocation failed (thid={}, normal={:08X})",
+                thread_id_, normal_routine);
     return;
   }
-  auto apc = memory()->TranslateVirtual<XAPC*>(apc_ptr);
-  kernel::xboxkrnl::xeKeInitializeApc(apc, guest_object(), XAPC::kDummyKernelRoutine,
-                                      XAPC::kDummyRundownRoutine, normal_routine,
-                                      1 /* user apc mode */, normal_context);
+  auto apc = memory()->TranslateVirtual<XAPC *>(apc_ptr);
+  kernel::xboxkrnl::xeKeInitializeApc(
+      apc, guest_object(), XAPC::kDummyKernelRoutine,
+      XAPC::kDummyRundownRoutine, normal_routine, 1 /* user apc mode */,
+      normal_context);
 
   // Important: use the caller PPC context when queuing to another thread.
-  // Using the target thread context here can corrupt APC lock/IRQL bookkeeping.
-  PPCContext* queue_ctx =
-      runtime::ThreadState::Get() ? runtime::current_ppc_context() : thread_state_->context();
+  // When called from host threads (e.g. dispatch_thread_), pass nullptr so host
+  // threads do not corrupt target thread's IRQL or trigger false self-deadlock
+  // assertions.
+  PPCContext *queue_ctx =
+      runtime::ThreadState::Get() ? runtime::current_ppc_context() : nullptr;
 
   if (!kernel::xboxkrnl::xeKeInsertQueueApc(apc, arg1, arg2, 0, queue_ctx)) {
     memory()->SystemHeapFree(apc_ptr);
-    REXSYS_ERROR(
-        "EnqueueApc: queue rejected (thid={}, normal={:08X}, ctx={:08X}, arg1={:08X}, "
-        "arg2={:08X})",
-        thread_id_, normal_routine, normal_context, arg1, arg2);
+    REXSYS_ERROR("EnqueueApc: queue rejected (thid={}, normal={:08X}, "
+                 "ctx={:08X}, arg1={:08X}, "
+                 "arg2={:08X})",
+                 thread_id_, normal_routine, normal_context, arg1, arg2);
     return;
   }
   // Match Edge/Canary behavior: callback is only a wakeup hint.
@@ -824,16 +892,17 @@ void XThread::EnqueueApc(uint32_t normal_routine, uint32_t normal_context, uint3
 
 void XThread::DeliverAPCs() {
   auto mem = memory();
-  auto* ctx = thread_state_->context();
+  auto *ctx = thread_state_->context();
   auto kthread = guest_object<X_KTHREAD>();
-  auto* dispatcher = kernel_state_->function_dispatcher();
+  auto *dispatcher = kernel_state_->function_dispatcher();
 
-  auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
-  auto& user_apc_queue = kthread->apc_lists[1];
+  auto old_irql =
+      kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
+  auto &user_apc_queue = kthread->apc_lists[1];
 
   while (!user_apc_queue.empty(mem) && kthread->apc_disable_count == 0) {
     PERF_counter_inc(kApcQueueDepth);
-    XAPC* apc = user_apc_queue.HeadObject(mem);
+    XAPC *apc = user_apc_queue.HeadObject(mem);
     uint32_t apc_ptr = mem->HostToGuestVirtual(apc);
     bool needs_freeing = apc->kernel_routine != XAPC::kDummyKernelRoutine;
 
@@ -842,7 +911,7 @@ void XThread::DeliverAPCs() {
 
     kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &kthread->apc_lock, old_irql);
 
-    uint8_t* scratch_ptr = mem->TranslateVirtual(scratch_address_);
+    uint8_t *scratch_ptr = mem->TranslateVirtual(scratch_address_);
     memory::store_and_swap<uint32_t>(scratch_ptr + 0, apc->normal_routine);
     memory::store_and_swap<uint32_t>(scratch_ptr + 4, apc->normal_context);
     memory::store_and_swap<uint32_t>(scratch_ptr + 8, apc->arg1);
@@ -850,12 +919,14 @@ void XThread::DeliverAPCs() {
 
     if (apc->kernel_routine != XAPC::kDummyKernelRoutine) {
       if (dispatcher->GetFunction(apc->kernel_routine)) {
-        uint64_t kernel_args[] = {apc_ptr, scratch_address_ + 0, scratch_address_ + 4,
-                                  scratch_address_ + 8, scratch_address_ + 12};
-        dispatcher->ExecuteTrap(thread_state_.get(), apc->kernel_routine, kernel_args,
-                                rex::countof(kernel_args));
+        uint64_t kernel_args[] = {apc_ptr, scratch_address_ + 0,
+                                  scratch_address_ + 4, scratch_address_ + 8,
+                                  scratch_address_ + 12};
+        dispatcher->ExecuteTrap(thread_state_.get(), apc->kernel_routine,
+                                kernel_args, rex::countof(kernel_args));
       } else {
-        REXSYS_ERROR("DeliverAPCs: kernel_routine {:08X} not found", uint32_t(apc->kernel_routine));
+        REXSYS_ERROR("DeliverAPCs: kernel_routine {:08X} not found",
+                     uint32_t(apc->kernel_routine));
       }
     } else {
       mem->SystemHeapFree(apc_ptr);
@@ -870,15 +941,16 @@ void XThread::DeliverAPCs() {
     if (normal_routine) {
       if (dispatcher->GetFunction(normal_routine)) {
         uint64_t normal_args[] = {normal_context, arg1, arg2};
-        dispatcher->ExecuteTrap(thread_state_.get(), normal_routine, normal_args,
-                                rex::countof(normal_args));
+        dispatcher->ExecuteTrap(thread_state_.get(), normal_routine,
+                                normal_args, rex::countof(normal_args));
       } else {
-        REXSYS_ERROR("DeliverAPCs: normal_routine {:08X} not found", normal_routine);
+        REXSYS_ERROR("DeliverAPCs: normal_routine {:08X} not found",
+                     normal_routine);
       }
     }
 
-    REXSYS_DEBUG("Completed delivery of APC to {:08X} ({:08X}, {:08X}, {:08X})", normal_routine,
-                 normal_context, arg1, arg2);
+    REXSYS_DEBUG("Completed delivery of APC to {:08X} ({:08X}, {:08X}, {:08X})",
+                 normal_routine, normal_context, arg1, arg2);
 
     if (needs_freeing) {
       mem->SystemHeapFree(apc_ptr);
@@ -894,31 +966,33 @@ void XThread::RundownAPCs() {
   assert_true(XThread::GetCurrentThread() == this);
   auto mem = memory();
   auto kthread = guest_object<X_KTHREAD>();
-  auto* ctx = thread_state_->context();
+  auto *ctx = thread_state_->context();
 
   // Rundown both user (1) and kernel (0) APC lists.
   for (int mode = 1; mode >= 0; --mode) {
-    auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
-    auto& apc_queue = kthread->apc_lists[mode];
+    auto old_irql =
+        kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
+    auto &apc_queue = kthread->apc_lists[mode];
 
     while (!apc_queue.empty(mem)) {
-      XAPC* apc = apc_queue.HeadObject(mem);
+      XAPC *apc = apc_queue.HeadObject(mem);
       uint32_t apc_ptr = mem->HostToGuestVirtual(apc);
       bool needs_freeing = apc->kernel_routine == XAPC::kDummyKernelRoutine;
 
       util::XeRemoveEntryList(&apc->list_entry, mem);
       apc->enqueued = 0;
 
-      kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &kthread->apc_lock, old_irql);
+      kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &kthread->apc_lock,
+                                              old_irql);
 
       if (apc->rundown_routine == XAPC::kDummyRundownRoutine) {
         // No-op.
       } else if (apc->rundown_routine) {
-        auto* dispatcher = kernel_state_->function_dispatcher();
+        auto *dispatcher = kernel_state_->function_dispatcher();
         if (dispatcher->GetFunction(apc->rundown_routine)) {
           uint64_t rundown_args[] = {apc_ptr};
-          dispatcher->Execute(thread_state_.get(), apc->rundown_routine, rundown_args,
-                              rex::countof(rundown_args));
+          dispatcher->Execute(thread_state_.get(), apc->rundown_routine,
+                              rundown_args, rex::countof(rundown_args));
         } else {
           REXSYS_WARN("RundownAPCs: rundown_routine {:08X} not found",
                       uint32_t(apc->rundown_routine));
@@ -929,15 +1003,14 @@ void XThread::RundownAPCs() {
         mem->SystemHeapFree(apc_ptr);
       }
 
-      old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
+      old_irql =
+          kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
     }
     kernel::xboxkrnl::xeKeKfReleaseSpinLock(ctx, &kthread->apc_lock, old_irql);
   }
 }
 
-int32_t XThread::QueryPriority() {
-  return thread_->priority();
-}
+int32_t XThread::QueryPriority() { return thread_->priority(); }
 
 void XThread::SetPriority(int32_t increment) {
   priority_ = increment;
@@ -960,6 +1033,11 @@ void XThread::SetPriority(int32_t increment) {
   }
   if (!REXCVAR_GET(ignore_thread_priorities)) {
     thread_->set_priority(target_priority);
+#if REX_PLATFORM_SWITCH
+    if (increment >= 16) {
+      RexSwitchSetCurrentThreadPriority(REX_SWITCH_PRIO_AUDIO);
+    }
+#endif
   }
 }
 
@@ -972,13 +1050,14 @@ uint8_t XThread::active_cpu() const {
   // kept in sync by SetActiveCpu). Avoids dependency on pcr_address_ which
   // may not be set yet if the thread is mid-creation.
   if (is_guest_thread()) {
-    auto* kthread = memory()->TranslateVirtual<const X_KTHREAD*>(guest_object());
+    auto *kthread =
+        memory()->TranslateVirtual<const X_KTHREAD *>(guest_object());
     return kthread->current_cpu;
   }
   if (!pcr_address_) {
     return 0;
   }
-  const X_KPCR& pcr = *memory()->TranslateVirtual<const X_KPCR*>(pcr_address_);
+  const X_KPCR &pcr = *memory()->TranslateVirtual<const X_KPCR *>(pcr_address_);
   return pcr.prcb_data.current_cpu;
 }
 
@@ -989,13 +1068,14 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
 
   // Write to guest KTHREAD (always available for guest threads).
   if (is_guest_thread()) {
-    X_KTHREAD& thread_object = *memory()->TranslateVirtual<X_KTHREAD*>(guest_object());
+    X_KTHREAD &thread_object =
+        *memory()->TranslateVirtual<X_KTHREAD *>(guest_object());
     thread_object.current_cpu = cpu_index;
   }
 
   // Write to PCR if allocated (may not be during early creation).
   if (pcr_address_) {
-    X_KPCR& pcr = *memory()->TranslateVirtual<X_KPCR*>(pcr_address_);
+    X_KPCR &pcr = *memory()->TranslateVirtual<X_KPCR *>(pcr_address_);
     pcr.prcb_data.current_cpu = cpu_index;
   }
 
@@ -1014,7 +1094,7 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
   }
 }
 
-bool XThread::GetTLSValue(uint32_t slot, uint32_t* value_out) {
+bool XThread::GetTLSValue(uint32_t slot, uint32_t *value_out) {
   if (slot * 4 > tls_total_size_) {
     return false;
   }
@@ -1038,17 +1118,19 @@ uint32_t XThread::suspend_count() {
   return guest_object<X_KTHREAD>()->suspend_count;
 }
 
-X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
+X_STATUS XThread::Resume(uint32_t *out_suspend_count) {
   auto guest_thread = guest_object<X_KTHREAD>();
   uint32_t unused_host_suspend_count = 0;
 
 #if REX_PLATFORM_WIN32
   uint8_t previous_suspend_count =
-      reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)->fetch_sub(1);
+      reinterpret_cast<std::atomic_uint8_t *>(&guest_thread->suspend_count)
+          ->fetch_sub(1);
   if (out_suspend_count) {
     *out_suspend_count = previous_suspend_count;
   }
-  return thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;
+  return thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS
+                                                     : X_STATUS_UNSUCCESSFUL;
 #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
   bool should_resume_host = false;
   {
@@ -1077,14 +1159,16 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
   if (out_suspend_count) {
     *out_suspend_count = previous_suspend_count;
   }
-  return thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;
+  return thread_->Resume(&unused_host_suspend_count) ? X_STATUS_SUCCESS
+                                                     : X_STATUS_UNSUCCESSFUL;
 #endif
 }
 
-X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
+X_STATUS XThread::Suspend(uint32_t *out_suspend_count) {
   auto guest_thread = guest_object<X_KTHREAD>();
   uint8_t previous_suspend_count =
-      reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)->fetch_add(1);
+      reinterpret_cast<std::atomic_uint8_t *>(&guest_thread->suspend_count)
+          ->fetch_add(1);
   if (out_suspend_count) {
     *out_suspend_count = previous_suspend_count;
   }
@@ -1094,7 +1178,8 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
   if (guest_thread->suspend_count == 0) {
     return X_STATUS_SUCCESS;
   }
-  return thread_->Suspend(&unused_host_suspend_count) ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;
+  return thread_->Suspend(&unused_host_suspend_count) ? X_STATUS_SUCCESS
+                                                      : X_STATUS_UNSUCCESSFUL;
 }
 
 #if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
@@ -1103,14 +1188,17 @@ uint32_t XThread::SelfSuspend() {
   std::unique_lock<std::mutex> lock(suspend_mutex_);
   uint32_t previous = guest_thread->suspend_count;
   guest_thread->suspend_count++;
-  suspend_cv_.wait(lock, [guest_thread]() { return guest_thread->suspend_count == 0; });
+  suspend_cv_.wait(
+      lock, [guest_thread]() { return guest_thread->suspend_count == 0; });
   return previous;
 }
 #endif
 
-// dishonored-nx (sa2-nx's, 2026-10-20; port 103): RexSetGuestThreadCoreLayout's layout applied by the calling guest
-// thread itself, once per new layout (one atomic load and compare otherwise): from XObject::Wait / SignalAndWait /
-// WaitMultiple and XThread::Delay, so no thread's cores are set while it runs elsewhere.
+// dishonored-nx (sa2-nx's, 2026-10-20; port 103): RexSetGuestThreadCoreLayout's
+// layout applied by the calling guest thread itself, once per new layout (one
+// atomic load and compare otherwise): from XObject::Wait / SignalAndWait /
+// WaitMultiple and XThread::Delay, so no thread's cores are set while it runs
+// elsewhere.
 void ApplyGuestCoreLayoutAtWait() {
 #if REX_PLATFORM_SWITCH
   const uint32_t gen = g_guest_layout_gen.load(std::memory_order_acquire);
@@ -1119,16 +1207,20 @@ void ApplyGuestCoreLayoutAtWait() {
   t_layout_applied = gen;
   if (t_guest_kind == 1) {
     const int32_t core = g_guest_main_core.load(std::memory_order_relaxed);
-    if (core >= 0) RexSwitchSetCurrentThreadMask(core, uint64_t(1) << core);
+    if (core >= 0)
+      RexSwitchSetCurrentThreadMask(core, uint64_t(1) << core);
   } else if (t_guest_kind == 2) {
     const uint32_t mask = g_guest_core_mask.load(std::memory_order_relaxed);
-    if (mask) RexSwitchSetCurrentThreadMask(g_guest_core_preferred.load(std::memory_order_relaxed), mask);
+    if (mask)
+      RexSwitchSetCurrentThreadMask(
+          g_guest_core_preferred.load(std::memory_order_relaxed), mask);
   }
 #endif
 }
 
-X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
-  ApplyGuestCoreLayoutAtWait();  // dishonored-nx (sa2-nx's; port 103)
+X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
+                        uint64_t interval) {
+  ApplyGuestCoreLayoutAtWait(); // dishonored-nx (sa2-nx's; port 103)
   int64_t timeout_ticks = interval;
   uint32_t timeout_ms;
   if (timeout_ticks > 0) {
@@ -1138,21 +1230,22 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
     timeout_ms = 0;
   } else if (timeout_ticks < 0) {
     // Relative time.
-    timeout_ms = uint32_t(-timeout_ticks / 10000);  // Ticks -> MS
+    timeout_ms = uint32_t(-timeout_ticks / 10000); // Ticks -> MS
   } else {
     timeout_ms = 0;
   }
   timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
   CheckTitleTermination();
   if (alertable) {
-    auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
+    auto result =
+        rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
     CheckTitleTermination();
     switch (result) {
-      default:
-      case rex::thread::SleepResult::kSuccess:
-        return X_STATUS_SUCCESS;
-      case rex::thread::SleepResult::kAlerted:
-        return X_STATUS_USER_APC;
+    default:
+    case rex::thread::SleepResult::kSuccess:
+      return X_STATUS_SUCCESS;
+    case rex::thread::SleepResult::kAlerted:
+      return X_STATUS_USER_APC;
     }
   } else {
     if (timeout_ms == 0) {
@@ -1172,7 +1265,7 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
 
 struct ThreadSavedState {
   uint32_t thread_id;
-  bool is_main_thread;  // Is this the main thread?
+  bool is_main_thread; // Is this the main thread?
   bool is_running;
 
   uint32_t apc_head;
@@ -1180,10 +1273,10 @@ struct ThreadSavedState {
   uint32_t tls_dynamic_address;
   uint32_t tls_total_size;
   uint32_t pcr_address;
-  uint32_t stack_base;        // High address
-  uint32_t stack_limit;       // Low address
-  uint32_t stack_alloc_base;  // Allocation address
-  uint32_t stack_alloc_size;  // Allocation size
+  uint32_t stack_base;       // High address
+  uint32_t stack_limit;      // Low address
+  uint32_t stack_alloc_base; // Allocation address
+  uint32_t stack_alloc_size; // Allocation size
 
   // Context (invalid if not running)
   struct {
@@ -1203,7 +1296,7 @@ struct ThreadSavedState {
 };
 
 // Save PPCContext to ThreadSavedState
-static void SaveContext(const PPCContext* ctx, ThreadSavedState& state) {
+static void SaveContext(const PPCContext *ctx, ThreadSavedState &state) {
   state.context.lr = ctx->lr;
   state.context.ctr = ctx->ctr.u64;
 
@@ -1314,7 +1407,7 @@ static void SaveContext(const PPCContext* ctx, ThreadSavedState& state) {
 }
 
 // Load ThreadSavedState into PPCContext
-static void LoadContext(PPCContext* ctx, const ThreadSavedState& state) {
+static void LoadContext(PPCContext *ctx, const ThreadSavedState &state) {
   ctx->lr = state.context.lr;
   ctx->ctr.u64 = state.context.ctr;
 
@@ -1424,7 +1517,7 @@ static void LoadContext(PPCContext* ctx, const ThreadSavedState& state) {
   ctx->vscr_sat = state.context.vscr_sat;
 }
 
-bool XThread::Save(stream::ByteStream* stream) {
+bool XThread::Save(stream::ByteStream *stream) {
   if (!guest_thread_) {
     // Host XThreads are expected to be recreated on their own.
     return false;
@@ -1435,8 +1528,8 @@ bool XThread::Save(stream::ByteStream* stream) {
   uint32_t pc = 0;
   if (running_) {
     // TODO(tomc): do we need rexglue-compatible thread serialization?
-    //             ideally any previous use for this (multi-dvds) are reworked in recomp to be
-    //             single xex
+    //             ideally any previous use for this (multi-dvds) are reworked
+    //             in recomp to be single xex
     REXSYS_WARN("XThread {:08X} serialization not implemented", handle());
     return false;
   }
@@ -1452,7 +1545,7 @@ bool XThread::Save(stream::ByteStream* stream) {
   state.thread_id = thread_id_;
   state.is_main_thread = main_thread_;
   state.is_running = running_;
-  state.apc_head = 0;  // APCs now live in guest-memory typed lists
+  state.apc_head = 0; // APCs now live in guest-memory typed lists
   state.tls_static_address = tls_static_address_;
   state.tls_dynamic_address = tls_dynamic_address_;
   state.tls_total_size = tls_total_size_;
@@ -1472,7 +1565,8 @@ bool XThread::Save(stream::ByteStream* stream) {
   return true;
 }
 
-object_ref<XThread> XThread::Restore(KernelState* kernel_state, stream::ByteStream* stream) {
+object_ref<XThread> XThread::Restore(KernelState *kernel_state,
+                                     stream::ByteStream *stream) {
   // Kind-of a hack, but we need to set the kernel state outside of the object
   // constructor so it doesn't register a handle with the object table.
   auto thread = new XThread(nullptr);
@@ -1511,7 +1605,8 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state, stream::ByteStre
 
   // Create thread state
   thread->thread_state_ = std::make_unique<runtime::ThreadState>(
-      thread->thread_id_, thread->stack_base_, thread->pcr_address_, kernel_state->memory());
+      thread->thread_id_, thread->stack_base_, thread->pcr_address_,
+      kernel_state->memory());
 
   if (state.is_running) {
     auto context = thread->thread_state_->context();
@@ -1521,8 +1616,8 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state, stream::ByteStre
     thread->RetainHandle();
 
     rex::thread::Thread::CreationParameters params;
-    params.create_suspended = true;  // Not done restoring yet.
-    params.stack_size = GuestHostStackBytes();  // port 58: switch_guest_stack_mb
+    params.create_suspended = true;            // Not done restoring yet.
+    params.stack_size = GuestHostStackBytes(); // port 58: switch_guest_stack_mb
     thread->thread_ = rex::thread::Thread::Create(params, [thread, state]() {
       // Set thread ID override. This is used by logging.
       rex::thread::set_current_thread_id(thread->handle());
@@ -1546,7 +1641,8 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state, stream::ByteStre
       // Execute user code.
       thread->running_ = true;
 
-      // TODO(tomc): do we need this? threads would need different restoration approach
+      // TODO(tomc): do we need this? threads would need different restoration
+      // approach
       //             see XThread::Save
       REXSYS_ERROR("Thread restore not implemented");
       (void)state;
@@ -1560,22 +1656,27 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state, stream::ByteStre
     });
     assert_not_null(thread->thread_);
 
-    // NOTE(tomc): if this is kept and processor notification dispatch is implemented,
-    //             this needs to send a signal to the processor that a thread was started
+    // NOTE(tomc): if this is kept and processor notification dispatch is
+    // implemented,
+    //             this needs to send a signal to the processor that a thread
+    //             was started
   }
 
   return object_ref<XThread>(thread);
 }
 
-XHostThread::XHostThread(KernelState* kernel_state, uint32_t stack_size, uint32_t creation_flags,
-                         std::function<int()> host_fn)
-    : XThread(kernel_state, stack_size, 0, 0, 0, creation_flags, false), host_fn_(host_fn) {
-  // NOTE(tomc): there was a start suspended check here before but I don't think we need it.
+XHostThread::XHostThread(KernelState *kernel_state, uint32_t stack_size,
+                         uint32_t creation_flags, std::function<int()> host_fn)
+    : XThread(kernel_state, stack_size, 0, 0, 0, creation_flags, false),
+      host_fn_(host_fn) {
+  // NOTE(tomc): there was a start suspended check here before but I don't think
+  // we need it.
 }
 
 void XHostThread::Execute() {
-  REXSYS_DEBUG("XThread::Execute thid {} (handle={:08X}, '{}', native={:08X}, <host>)", thread_id_,
-               handle(), thread_name_, thread_->system_id());
+  REXSYS_DEBUG(
+      "XThread::Execute thid {} (handle={:08X}, '{}', native={:08X}, <host>)",
+      thread_id_, handle(), thread_name_, thread_->system_id());
 
   // Let the kernel know we are starting.
   kernel_state_->OnThreadExecute(this);
@@ -1586,14 +1687,19 @@ void XHostThread::Execute() {
   Exit(ret);
 }
 
-}  // namespace rex::system
+} // namespace rex::system
 
-// bejeweled3-nx (2026-10-22; port 55, from feedingfrenzy2-nx's SDK): the same layout as RexSetGuestThreadCoreLayout
-// below, for the guest threads started from now on, each thread setting its own cores as it starts (XThread's thread
-// body above). Called before the module is launched, it moves no running thread: RexSetGuestThreadCoreLayout re-masked
-// the running guest threads under the object table's lock and hung Peggle's first frames on the console (and Banjo's
-// first Swap in Ryujinx: banjo_renut_core_layout is off for it). A no-op elsewhere.
-extern "C" void RexSetGuestThreadCoresAtStart(int main_core, uint32_t others_mask, int others_preferred) {
+// bejeweled3-nx (2026-10-22; port 55, from feedingfrenzy2-nx's SDK): the same
+// layout as RexSetGuestThreadCoreLayout below, for the guest threads started
+// from now on, each thread setting its own cores as it starts (XThread's thread
+// body above). Called before the module is launched, it moves no running
+// thread: RexSetGuestThreadCoreLayout re-masked the running guest threads under
+// the object table's lock and hung Peggle's first frames on the console (and
+// Banjo's first Swap in Ryujinx: banjo_renut_core_layout is off for it). A
+// no-op elsewhere.
+extern "C" void RexSetGuestThreadCoresAtStart(int main_core,
+                                              uint32_t others_mask,
+                                              int others_preferred) {
 #if REX_PLATFORM_SWITCH
   g_guest_core_preferred.store(others_preferred, std::memory_order_relaxed);
   g_guest_core_mask.store(others_mask, std::memory_order_release);
@@ -1605,31 +1711,41 @@ extern "C" void RexSetGuestThreadCoresAtStart(int main_core, uint32_t others_mas
 #endif
 }
 
-// banjo-nx (2026-10-20, from sa2-nx): the Switch's core layout for a game whose main thread does the game's work and its drawing (N&B and SA2
-// with Renut's renderer: banjo_renut_core_layout). The guest main thread is pinned to 'main_core', every other guest
-// thread, now and to come, gets 'others_mask' (preferring 'others_preferred'), so none of them shares the main
-// thread's core: at the game threads' priority (0x3B) Horizon time-slices threads of a core in 10 ms slices. The host
-// threads keep their own placement (the render thread on core 1). Returns the guest threads that will move. A no-op
+// banjo-nx (2026-10-20, from sa2-nx): the Switch's core layout for a game whose
+// main thread does the game's work and its drawing (N&B and SA2 with Renut's
+// renderer: banjo_renut_core_layout). The guest main thread is pinned to
+// 'main_core', every other guest thread, now and to come, gets 'others_mask'
+// (preferring 'others_preferred'), so none of them shares the main thread's
+// core: at the game threads' priority (0x3B) Horizon time-slices threads of a
+// core in 10 ms slices. The host threads keep their own placement (the render
+// thread on core 1). Returns the guest threads that will move. A no-op
 // elsewhere.
 //
-// dishonored-nx (sa2-nx's, 2026-10-20, after banjo-nx's Ryujinx runs: 4 of 10 froze at the first Swap with the layout
-// on, none with it off; port 103): no thread's cores are set by another thread any more (svcSetThreadCoreMask on a
-// thread running elsewhere waits for it to leave its core, and the game's loader threads were busy). The layout is
-// recorded with a new generation; the calling thread (the main thread, at its Swap) applies its own at once, every
-// other guest thread its own at its next wait (ApplyGuestCoreLayoutAtWait), threads made later at their start.
-extern "C" uint32_t RexSetGuestThreadCoreLayout(int main_core, uint32_t others_mask, int others_preferred) {
+// dishonored-nx (sa2-nx's, 2026-10-20, after banjo-nx's Ryujinx runs: 4 of 10
+// froze at the first Swap with the layout on, none with it off; port 103): no
+// thread's cores are set by another thread any more (svcSetThreadCoreMask on a
+// thread running elsewhere waits for it to leave its core, and the game's
+// loader threads were busy). The layout is recorded with a new generation; the
+// calling thread (the main thread, at its Swap) applies its own at once, every
+// other guest thread its own at its next wait (ApplyGuestCoreLayoutAtWait),
+// threads made later at their start.
+extern "C" uint32_t RexSetGuestThreadCoreLayout(int main_core,
+                                                uint32_t others_mask,
+                                                int others_preferred) {
 #if REX_PLATFORM_SWITCH
   using rex::system::XThread;
   g_guest_core_preferred.store(others_preferred, std::memory_order_relaxed);
   g_guest_core_mask.store(others_mask, std::memory_order_relaxed);
   g_guest_main_core.store(main_core, std::memory_order_relaxed);
   g_guest_layout_gen.fetch_add(1, std::memory_order_acq_rel);
-  rex::system::ApplyGuestCoreLayoutAtWait();  // the caller's own, now
-  auto* kernel = rex::system::kernel_state();
-  if (!kernel) return 0;
+  rex::system::ApplyGuestCoreLayoutAtWait(); // the caller's own, now
+  auto *kernel = rex::system::kernel_state();
+  if (!kernel)
+    return 0;
   uint32_t moved = 0;
-  for (auto& thread : kernel->object_table()->GetObjectsByType<XThread>())
-    if (thread && thread->is_guest_thread() && thread->thread()) ++moved;
+  for (auto &thread : kernel->object_table()->GetObjectsByType<XThread>())
+    if (thread && thread->is_guest_thread() && thread->thread())
+      ++moved;
   return moved;
 #else
   (void)main_core;

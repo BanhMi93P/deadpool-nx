@@ -65,24 +65,6 @@ bool InputLocation(u8 usage, u8 usage_index, u32 &location) {
   return false;
 }
 
-// Xenos vertex formats (GPUVERTEXFORMAT).
-enum VertexFormat : u32 {
-  k8_8_8_8 = 6,
-  k2_10_10_10 = 7,
-  k10_11_11 = 16,
-  k11_11_10 = 17,
-  k16_16 = 25,
-  k16_16_16_16 = 26,
-  k16_16_Float = 31,
-  k16_16_16_16_Float = 32,
-  k32 = 33,
-  k32_32 = 34,
-  k32_32_32_32 = 35,
-  k32_Float = 36,
-  k32_32_Float = 37,
-  k32_32_32_32_Float = 38,
-  k32_32_32_Float = 57,
-};
 
 struct FormatInfo {
   u32 dwords;      // guest size
@@ -568,6 +550,10 @@ const char *UsageSemantic(u8 usage) {
   return usage < std::size(kUsageSemantics) ? kUsageSemantics[usage] : "TEXCOORD";
 }
 
+bool VertexInputLocation(u8 usage, u8 usage_index, u32 &location) {
+  return InputLocation(usage, usage_index, location);
+}
+
 HostVertexLayout BuildHostVertexLayout(const GuestVertexElement *elements, u32 count) {
   HostVertexLayout layout;
   for (u32 i = 0; i < count; ++i) {
@@ -615,6 +601,9 @@ HostVertexLayout BuildHostVertexLayout(const GuestVertexElement *elements, u32 c
       host.components = 4;
     }
     layout.streams[stream].used = true;
+    layout.streams[stream].location_mask |= 1u << host.location;
+    layout.streams[stream].guest_vertex_bytes =
+        std::max(layout.streams[stream].guest_vertex_bytes, host.guest_offset + info.dwords * 4u);
     layout.used_mask |= 1u << stream;  // banjo-nx (2026-10-20, from sa2-nx, banjo_renut_stream_mask)
     layout.streams[stream].elements.push_back(host);
   }

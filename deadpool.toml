@@ -1,0 +1,13 @@
+# Deadpool PC Configuration (Stage 3 Reference Baseline)
+game_data_root = "G:\\!Project\\!port\\Deadpool\\game"
+audio_mute = false
+window_start_minimized = false
+license_mask = 1
+gpu_plugin = "xenos"
+
+# Window and Display Settings
+fullscreen = false
+window_width = 1280
+window_height = 720
+video_mode_width = 1280
+video_mode_height = 720

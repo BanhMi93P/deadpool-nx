@@ -33,9 +33,10 @@ std::string SnapshotDeltaReport();
 // call.up_indices, copied now.
 void QueueDraw(u32 device_va, const DrawCall &call, u32 up_vertex_bytes, u32 up_index_bytes);
 
-// A Begin*Vertices draw whose 'bytes' of vertices the game writes to 'scratch'
-// after the call.
-void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u32 bytes);
+// A Begin*Vertices draw whose 'bytes' of vertices (and optional 'index_bytes'
+// of indices) the game writes to 'scratch' / 'index_scratch' after the call.
+void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u32 bytes,
+                       const u8 *index_scratch = nullptr, u32 index_bytes = 0);
 
 // Queues the device's Begin*Vertices draw with its vertices as they are now,
 // and copies those of one it recorded into a command buffer. Every hook calls

@@ -713,14 +713,10 @@ bool UseRingCleaner() {
   return IsDeko3D() && banjo::renut_gpu::RingCleanerOn();
 }
 
-// Every range written so far is clean (handed to the cleaner and waited for, the rest by Publish).
+// Every range written so far is clean (previously-handed-off ranges waited for, the rest by Publish).
 void PublishAll(VideoState &s, uint32_t slot) {
-  if (UseRingCleaner()) {
-    std::vector<UploadRing::Range> ranges;
-    s.uploads[slot].HandOff(ranges);
-    RingCleaner::Instance().Enqueue(std::move(ranges));
+  if (UseRingCleaner())
     RingCleaner::Instance().Wait(UINT64_MAX);
-  }
   s.uploads[slot].Publish();
 }
 
@@ -939,6 +935,7 @@ void SubmitAndWaitLocked(VideoState &s) {
   const uint32_t count = s.pending_list ? 2 : 1;
   s.pending_list = nullptr;
   s.queue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0, s.fences[cur].get());
+  banjo::renut_gpu::NoteWorkloadSubmit();
   {
     render_thread::WaitScope wait;
     s.queue->waitForCommandFence(s.fences[cur].get());
@@ -976,6 +973,7 @@ void SubmitAndAdvance(VideoState &s, plume::RenderCommandSemaphore *wait,
     s.queue->executeCommandLists(lists, count, wait ? waits : nullptr, wait ? 1 : 0,
                                  signal ? signals : nullptr, signal ? 1 : 0,
                                  s.fences[cur].get());
+    banjo::renut_gpu::NoteWorkloadSubmit();
     s.submitted[cur] = true;
     // banjo-nx (2026-10-20, input latency): the guest Swap this frame ends, for the probe's "input -> GPU done".
     g_slot_swap[cur] = g_presenting_swap;
@@ -1221,6 +1219,7 @@ void Video::KickLocked() {
     }
 #endif
     s.queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence);
+    banjo::renut_gpu::NoteWorkloadSubmit();
 #if defined(PLUME_DEKO3D)
     if (fence) {
       t.last_kick[cur] = plume::Deko3DCopyFence(fence);
@@ -1278,6 +1277,7 @@ void Video::KickLocked() {
     }
     const plume::RenderCommandList *lists[] = {s.pending_list};
     s.queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, fence);
+    banjo::renut_gpu::NoteWorkloadSubmit();
     if (fence) {
       t.last_kick[cur] = plume::Deko3DCopyFence(fence);
       ++t.kick_submits[cur];

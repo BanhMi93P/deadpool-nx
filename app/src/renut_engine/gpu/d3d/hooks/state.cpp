@@ -643,3 +643,254 @@ BANJO_RENUT_HOOK(sub_824DDDB8, GetSamplerStateHook<16>);  // D3DDevice_GetSample
 BANJO_RENUT_HOOK(sub_824DDE10, GetSamplerStateHook<17>);  // D3DDevice_GetSamplerState_VGradientExpBias  // katamari-nx: N&B sub_82636D70, sampler state 17 getter (state tables, this game index 17)
 BANJO_RENUT_HOOK(sub_824DDE68, GetSamplerStateHook<18>);  // D3DDevice_GetSamplerState_WhiteBorderColorW  // katamari-nx: N&B sub_82636DC8, sampler state 18 getter (state tables, this game index 18)
 BANJO_RENUT_HOOK(sub_824DDEC8, GetSamplerStateHook<19>);  // D3DDevice_GetSamplerState_PointBorderEnable  // katamari-nx: N&B sub_82636E28, sampler state 19 getter (state tables, this game index 19)
+
+// ---------------------------------------------------------------------------
+// Deadpool D3D state, shader, constant, stream & texture hooks (XDK 21173)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr u32 kDeadpoolVertexFOffset =
+    u32(offsetof(d3d::Device, m_Constants) + offsetof(d3d::Constants, VertexShaderF));
+constexpr u32 kDeadpoolPixelFOffset =
+    u32(offsetof(d3d::Device, m_Constants) + offsetof(d3d::Constants, PixelShaderF));
+static_assert(kDeadpoolVertexFOffset == 0x780 && kDeadpoolPixelFOffset == 0x1780);
+
+void SetDeadpoolShaderConstantF(u32 device_va, u32 start, u32 data_va, u32 count, u64 pending_mask,
+                                bool pixel) {
+  native::Device d = native::DeviceAt(device_va);
+  if (!d)
+    return;
+  if (count && start < 256 && count <= 256 - start) {
+    if (const u8 *src = GuestPtr<const u8>(data_va)) {
+      const u32 base_off = pixel ? kDeadpoolPixelFOffset : kDeadpoolVertexFOffset;
+      std::memcpy(d.bytes + base_off + start * 16u, src, count * 16u);
+    }
+  }
+  const u32 pending_word = pixel ? 1u : 0u;
+  d.SetPending(pending_word, d.Pending(pending_word) | pending_mask);
+}
+
+void ApplyDeadpoolShaderConstants(native::Device device, bool pixel, const u8 *table) {
+  if (!table)
+    return;
+  const u64 float_clear = u64(*reinterpret_cast<const be_u64 *>(table));
+  const u32 pending_word = pixel ? 1u : 0u;
+  device.SetPending(pending_word, device.Pending(pending_word) & ~float_clear);
+  if (u64(*reinterpret_cast<const be_u64 *>(table + 8)) != 0)
+    device.Dirty(4, u64(1) << 56);
+  const u32 size = u32(*reinterpret_cast<const be_u32 *>(table + 16));
+  const u8 *p = table + 20;
+  const u8 *const end = p + size;
+  while (p < end) {
+    const u16 count = u16(*reinterpret_cast<const be_u16 *>(p + 2));
+    p += 4;
+    if (count == 0)
+      break;
+    p += 4;
+  }
+  while (p < end) {
+    const u16 off = u16(*reinterpret_cast<const be_u16 *>(p));
+    const u16 count = u16(*reinterpret_cast<const be_u16 *>(p + 2));
+    p += 4;
+    if (count == 0)
+      break;
+    const u32 bytes = u32(count) * 4u;
+    const u32 dst_off = native::off::TextureFetch + off;
+    std::memcpy(device.bytes + dst_off, p, bytes);
+    device.TouchRange(dst_off, bytes);
+    p += bytes;
+  }
+  while (p < end) {
+    const u16 off = u16(*reinterpret_cast<const be_u16 *>(p));
+    const u16 count = u16(*reinterpret_cast<const be_u16 *>(p + 2));
+    p += 4;
+    if (count == 0)
+      break;
+    u32 dst_off = native::off::TextureFetch + off;
+    for (u16 i = 0; i < count; ++i) {
+      const u32 mask = u32(*reinterpret_cast<const be_u32 *>(p));
+      const u32 bits = u32(*reinterpret_cast<const be_u32 *>(p + 4));
+      device.SetW(dst_off, (device.W(dst_off) & mask) | bits);
+      dst_off += 4;
+      p += 8;
+    }
+  }
+}
+
+void DeadpoolSetTexture_hook(u32 device, u32 sampler, u32 texture) {
+  native::Device d = native::DeviceAt(device);
+  native::SetTexture(d, sampler, texture);
+  if (!texture && d && sampler < d3d::kTextureFetchSlots) {
+    const u32 fetch0 = native::off::TextureFetch + sampler * 24u;
+    d.SetW(fetch0, d.W(fetch0) & ~3u);
+  }
+}
+
+void DeadpoolSetVertexShader_hook(u32 device_va, u32 shader_va) {
+  native::Device d = native::DeviceAt(device_va);
+  if (!d)
+    return;
+  if (shader_va)
+    d.Dirty(2, 0x80000ULL);
+  if (const u32 previous = d.W(d3d::kDeviceOffsetVertexShader))
+    native::TagResourceFence(d, previous, false);
+  d.SetW(d3d::kDeviceOffsetVertexShader, shader_va);
+  d.SetB(native::off::Flags2, d.B(native::off::Flags2) & 0x7Fu);
+  if (shader_va && shader_va + 872u != 0) {
+    if (const auto *off_ptr = GuestPtr<const be_u32>(shader_va + 892u)) {
+      if (const u32 rel = u32(*off_ptr))
+        ApplyDeadpoolShaderConstants(d, false, GuestPtr<const u8>(shader_va + 872u + rel));
+    }
+  }
+}
+
+void DeadpoolSetPixelShader_hook(u32 device_va, u32 shader_va) {
+  native::Device d = native::DeviceAt(device_va);
+  if (!d)
+    return;
+  if (const u32 previous = d.W(d3d::kDeviceOffsetPixelShader))
+    native::TagResourceFence(d, previous, false);
+  d.SetW(d3d::kDeviceOffsetPixelShader, shader_va);
+  d.Dirty(2, 0x120000ULL);
+  if (shader_va) {
+    if (const auto *off_ptr = GuestPtr<const be_u32>(shader_va + 60u)) {
+      if (const u32 rel = u32(*off_ptr))
+        ApplyDeadpoolShaderConstants(d, true, GuestPtr<const u8>(shader_va + 40u + rel));
+    }
+  }
+}
+
+}  // namespace
+
+// void D3DDevice_SetVertexShaderConstantF(D3DDevice*, UINT, const float*, UINT, UINT64) [sub_82D9C6A8]
+DEADPOOL_RENUT_HOOK_RAW(sub_82D9C6A8) {
+  SetDeadpoolShaderConstantF(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u64, false);
+}
+
+// void D3DDevice_SetPixelShaderConstantF(D3DDevice*, UINT, const float*, UINT, UINT64) [sub_82D9C780]
+DEADPOOL_RENUT_HOOK_RAW(sub_82D9C780) {
+  SetDeadpoolShaderConstantF(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u64, true);
+}
+
+DEADPOOL_RENUT_HOOK(sub_82D97E08, D3DDevice_SetIndices_hook);            // D3DDevice_SetIndices
+DEADPOOL_RENUT_HOOK(sub_82D97CE8, D3DDevice_SetStreamSource_hook);       // D3DDevice_SetStreamSource
+DEADPOOL_RENUT_HOOK(sub_82D9CA50, DeadpoolSetPixelShader_hook);          // D3DDevice_SetPixelShader
+DEADPOOL_RENUT_HOOK(sub_82D9CC58, DeadpoolSetVertexShader_hook);         // D3DDevice_SetVertexShader
+DEADPOOL_RENUT_HOOK(sub_82D9ABE0, DeadpoolSetTexture_hook);              // D3DDevice_SetTexture
+DEADPOOL_RENUT_HOOK(sub_82D9CE70, D3DDevice_SetVertexDeclaration_hook);  // D3DDevice_SetVertexDeclaration
+
+// Deadpool render state setters (0x8359BB28, indices 10-100).
+DEADPOOL_RENUT_HOOK(sub_82D96000, SetRenderStateHook<10>);   // D3DDevice_SetRenderState_ZEnable
+DEADPOOL_RENUT_HOOK(sub_82D96070, SetRenderStateHook<11>);   // D3DDevice_SetRenderState_ZFunc
+DEADPOOL_RENUT_HOOK(sub_82D96040, SetRenderStateHook<12>);   // D3DDevice_SetRenderState_ZWriteEnable
+DEADPOOL_RENUT_HOOK(sub_82D95908, SetRenderStateHook<13>);   // D3DDevice_SetRenderState_FillMode
+DEADPOOL_RENUT_HOOK(sub_82D958D8, SetRenderStateHook<14>);   // D3DDevice_SetRenderState_CullMode
+DEADPOOL_RENUT_HOOK(sub_82D95970, SetRenderStateHook<15>);   // D3DDevice_SetRenderState_AlphaBlendEnable
+DEADPOOL_RENUT_HOOK(sub_82D95D00, SetRenderStateHook<16>);   // D3DDevice_SetRenderState_SeparateAlphaBlendEnable
+DEADPOOL_RENUT_HOOK(sub_82D95E28, SetRenderStateHook<17>);   // D3DDevice_SetRenderState_BlendFactor
+DEADPOOL_RENUT_HOOK(sub_82D95A90, SetRenderStateHook<18>);   // D3DDevice_SetRenderState_SrcBlend
+DEADPOOL_RENUT_HOOK(sub_82D95B20, SetRenderStateHook<19>);   // D3DDevice_SetRenderState_DestBlend
+DEADPOOL_RENUT_HOOK(sub_82D95A00, SetRenderStateHook<20>);   // D3DDevice_SetRenderState_BlendOp
+DEADPOOL_RENUT_HOOK(sub_82D95C20, SetRenderStateHook<21>);   // D3DDevice_SetRenderState_SrcBlendAlpha
+DEADPOOL_RENUT_HOOK(sub_82D95C90, SetRenderStateHook<22>);   // D3DDevice_SetRenderState_DestBlendAlpha
+DEADPOOL_RENUT_HOOK(sub_82D95BB0, SetRenderStateHook<23>);   // D3DDevice_SetRenderState_BlendOpAlpha
+DEADPOOL_RENUT_HOOK(sub_82D95938, SetRenderStateHook<24>);   // D3DDevice_SetRenderState_AlphaTestEnable
+DEADPOOL_RENUT_HOOK(sub_82D95D98, SetRenderStateHook<25>);   // D3DDevice_SetRenderState_AlphaRef
+DEADPOOL_RENUT_HOOK(sub_82D95DF8, SetRenderStateHook<26>);   // D3DDevice_SetRenderState_AlphaFunc
+DEADPOOL_RENUT_HOOK(sub_82D960A8, SetRenderStateHook<27>);   // D3DDevice_SetRenderState_StencilEnable
+DEADPOOL_RENUT_HOOK(sub_82D960E8, SetRenderStateHook<28>);   // D3DDevice_SetRenderState_TwoSidedStencilMode
+DEADPOOL_RENUT_HOOK(sub_82D96150, SetRenderStateHook<29>);   // D3DDevice_SetRenderState_StencilFail
+DEADPOOL_RENUT_HOOK(sub_82D96188, SetRenderStateHook<30>);   // D3DDevice_SetRenderState_StencilZFail
+DEADPOOL_RENUT_HOOK(sub_82D961C0, SetRenderStateHook<31>);   // D3DDevice_SetRenderState_StencilPass
+DEADPOOL_RENUT_HOOK(sub_82D96120, SetRenderStateHook<32>);   // D3DDevice_SetRenderState_StencilFunc
+DEADPOOL_RENUT_HOOK(sub_82D962C0, SetRenderStateHook<33>);   // D3DDevice_SetRenderState_StencilRef
+DEADPOOL_RENUT_HOOK(sub_82D962E0, SetRenderStateHook<34>);   // D3DDevice_SetRenderState_StencilMask
+DEADPOOL_RENUT_HOOK(sub_82D96300, SetRenderStateHook<35>);   // D3DDevice_SetRenderState_StencilWriteMask
+DEADPOOL_RENUT_HOOK(sub_82D96220, SetRenderStateHook<36>);   // D3DDevice_SetRenderState_CCWStencilFail
+DEADPOOL_RENUT_HOOK(sub_82D96258, SetRenderStateHook<37>);   // D3DDevice_SetRenderState_CCWStencilZFail
+DEADPOOL_RENUT_HOOK(sub_82D96290, SetRenderStateHook<38>);   // D3DDevice_SetRenderState_CCWStencilPass
+DEADPOOL_RENUT_HOOK(sub_82D961F0, SetRenderStateHook<39>);   // D3DDevice_SetRenderState_CCWStencilFunc
+DEADPOOL_RENUT_HOOK(sub_82D96320, SetRenderStateHook<40>);   // D3DDevice_SetRenderState_CCWStencilRef
+DEADPOOL_RENUT_HOOK(sub_82D96340, SetRenderStateHook<41>);   // D3DDevice_SetRenderState_CCWStencilMask
+DEADPOOL_RENUT_HOOK(sub_82D96360, SetRenderStateHook<42>);   // D3DDevice_SetRenderState_CCWStencilWriteMask
+DEADPOOL_RENUT_HOOK(sub_82D96380, SetRenderStateHook<43>);   // D3DDevice_SetRenderState_ClipPlaneEnable
+DEADPOOL_RENUT_HOOK(sub_82D966B0, SetRenderStateHook<44>);   // D3DDevice_SetRenderState_PointSize
+DEADPOOL_RENUT_HOOK(sub_82D96708, SetRenderStateHook<45>);   // D3DDevice_SetRenderState_PointSizeMin
+DEADPOOL_RENUT_HOOK(sub_82D966A0, SetRenderStateHook<46>);   // D3DDevice_SetRenderState_PointSpriteEnable
+DEADPOOL_RENUT_HOOK(sub_82D96758, SetRenderStateHook<47>);   // D3DDevice_SetRenderState_PointSizeMax
+DEADPOOL_RENUT_HOOK(sub_82D96550, SetRenderStateHook<48>);   // D3DDevice_SetRenderState_MultiSampleAntiAlias
+DEADPOOL_RENUT_HOOK(sub_82D96580, SetRenderStateHook<49>);   // D3DDevice_SetRenderState_MultiSampleMask
+DEADPOOL_RENUT_HOOK(sub_82D98410, SetRenderStateHook<50>);   // D3DDevice_SetRenderState_ScissorTestEnable
+DEADPOOL_RENUT_HOOK(sub_82D963E0, SetRenderStateHook<51>);   // D3DDevice_SetRenderState_SlopeScaleDepthBias
+DEADPOOL_RENUT_HOOK(sub_82D964A8, SetRenderStateHook<52>);   // D3DDevice_SetRenderState_DepthBias
+DEADPOOL_RENUT_HOOK(sub_82D965A0, SetRenderStateHook<53>);   // D3DDevice_SetRenderState_ColorWriteEnable
+DEADPOOL_RENUT_HOOK(sub_82D965E0, SetRenderStateHook<54>);   // D3DDevice_SetRenderState_ColorWriteEnable1
+DEADPOOL_RENUT_HOOK(sub_82D96620, SetRenderStateHook<55>);   // D3DDevice_SetRenderState_ColorWriteEnable2
+DEADPOOL_RENUT_HOOK(sub_82D96660, SetRenderStateHook<56>);   // D3DDevice_SetRenderState_ColorWriteEnable3
+DEADPOOL_RENUT_HOOK(sub_82D96E28, SetRenderStateHook<57>);   // D3DDevice_SetRenderState_TessellationMode
+DEADPOOL_RENUT_HOOK(sub_82D96DB8, SetRenderStateHook<58>);   // D3DDevice_SetRenderState_MinTessellationLevel
+DEADPOOL_RENUT_HOOK(sub_82D96DF0, SetRenderStateHook<59>);   // D3DDevice_SetRenderState_MaxTessellationLevel
+DEADPOOL_RENUT_HOOK(sub_82D967A8, SetRenderStateHook<60>);   // D3DDevice_SetRenderState_Wrap0
+DEADPOOL_RENUT_HOOK(sub_82D967C8, SetRenderStateHook<61>);   // D3DDevice_SetRenderState_Wrap1
+DEADPOOL_RENUT_HOOK(sub_82D967F0, SetRenderStateHook<62>);   // D3DDevice_SetRenderState_Wrap2
+DEADPOOL_RENUT_HOOK(sub_82D96818, SetRenderStateHook<63>);   // D3DDevice_SetRenderState_Wrap3
+DEADPOOL_RENUT_HOOK(sub_82D96840, SetRenderStateHook<64>);   // D3DDevice_SetRenderState_Wrap4
+DEADPOOL_RENUT_HOOK(sub_82D96868, SetRenderStateHook<65>);   // D3DDevice_SetRenderState_Wrap5
+DEADPOOL_RENUT_HOOK(sub_82D96890, SetRenderStateHook<66>);   // D3DDevice_SetRenderState_Wrap6
+DEADPOOL_RENUT_HOOK(sub_82D968B8, SetRenderStateHook<67>);   // D3DDevice_SetRenderState_Wrap7
+DEADPOOL_RENUT_HOOK(sub_82D968D8, SetRenderStateHook<68>);   // D3DDevice_SetRenderState_Wrap8
+DEADPOOL_RENUT_HOOK(sub_82D968F8, SetRenderStateHook<69>);   // D3DDevice_SetRenderState_Wrap9
+DEADPOOL_RENUT_HOOK(sub_82D96920, SetRenderStateHook<70>);   // D3DDevice_SetRenderState_Wrap10
+DEADPOOL_RENUT_HOOK(sub_82D96948, SetRenderStateHook<71>);   // D3DDevice_SetRenderState_Wrap11
+DEADPOOL_RENUT_HOOK(sub_82D96970, SetRenderStateHook<72>);   // D3DDevice_SetRenderState_Wrap12
+DEADPOOL_RENUT_HOOK(sub_82D96998, SetRenderStateHook<73>);   // D3DDevice_SetRenderState_Wrap13
+DEADPOOL_RENUT_HOOK(sub_82D969C0, SetRenderStateHook<74>);   // D3DDevice_SetRenderState_Wrap14
+DEADPOOL_RENUT_HOOK(sub_82D969E8, SetRenderStateHook<75>);   // D3DDevice_SetRenderState_Wrap15
+DEADPOOL_RENUT_HOOK(sub_82D96B08, SetRenderStateHook<76>);   // D3DDevice_SetRenderState_ViewportEnable
+DEADPOOL_RENUT_HOOK(sub_82D96B58, SetRenderStateHook<77>);   // D3DDevice_SetRenderState_HighPrecisionBlendEnable
+DEADPOOL_RENUT_HOOK(sub_82D96BF0, SetRenderStateHook<78>);   // D3DDevice_SetRenderState_HighPrecisionBlendEnable1
+DEADPOOL_RENUT_HOOK(sub_82D96C88, SetRenderStateHook<79>);   // D3DDevice_SetRenderState_HighPrecisionBlendEnable2
+DEADPOOL_RENUT_HOOK(sub_82D96D20, SetRenderStateHook<80>);   // D3DDevice_SetRenderState_HighPrecisionBlendEnable3
+DEADPOOL_RENUT_HOOK(sub_82D96E60, SetRenderStateHook<81>);   // D3DDevice_SetRenderState_HalfPixelOffset
+DEADPOOL_RENUT_HOOK(sub_82D96E98, SetRenderStateHook<82>);   // D3DDevice_SetRenderState_PrimitiveResetEnable
+DEADPOOL_RENUT_HOOK(sub_82D96EC8, SetRenderStateHook<83>);   // D3DDevice_SetRenderState_PrimitiveResetIndex
+DEADPOOL_RENUT_HOOK(sub_82D96EF0, SetRenderStateHook<84>);   // D3DDevice_SetRenderState_AlphaToMaskEnable
+DEADPOOL_RENUT_HOOK(sub_82D96F20, SetRenderStateHook<85>);   // D3DDevice_SetRenderState_AlphaToMaskOffsets
+DEADPOOL_RENUT_HOOK(sub_82D96F48, SetRenderStateHook<86>);   // D3DDevice_SetRenderState_GuardBand_X
+DEADPOOL_RENUT_HOOK(sub_82D96F78, SetRenderStateHook<87>);   // D3DDevice_SetRenderState_GuardBand_Y
+DEADPOOL_RENUT_HOOK(sub_82D96FA8, SetRenderStateHook<88>);   // D3DDevice_SetRenderState_DiscardBand_X
+DEADPOOL_RENUT_HOOK(sub_82D96FD0, SetRenderStateHook<89>);   // D3DDevice_SetRenderState_DiscardBand_Y
+DEADPOOL_RENUT_HOOK(sub_82D97098, SetRenderStateHook<90>);   // D3DDevice_SetRenderState_HiStencilEnable
+DEADPOOL_RENUT_HOOK(sub_82D970C8, SetRenderStateHook<91>);   // D3DDevice_SetRenderState_HiStencilWriteEnable
+DEADPOOL_RENUT_HOOK(sub_82D970F8, SetRenderStateHook<92>);   // D3DDevice_SetRenderState_HiStencilFunc
+DEADPOOL_RENUT_HOOK(sub_82D97128, SetRenderStateHook<93>);   // D3DDevice_SetRenderState_HiStencilRef
+DEADPOOL_RENUT_HOOK(sub_82D97148, SetRenderStateHook<94>);   // D3DDevice_SetRenderState_PresentInterval
+DEADPOOL_RENUT_HOOK(sub_82D97158, SetRenderStateHook<95>);   // D3DDevice_SetRenderState_PresentImmediateThreshold
+DEADPOOL_RENUT_HOOK(sub_82D97000, SetRenderStateHook<96>);   // D3DDevice_SetRenderState_HiZEnable
+DEADPOOL_RENUT_HOOK(sub_82D97030, SetRenderStateHook<97>);   // D3DDevice_SetRenderState_HiZWriteEnable
+DEADPOOL_RENUT_HOOK(sub_82D95F28, SetRenderStateHook<98>);   // D3DDevice_SetRenderState_LastPixel
+DEADPOOL_RENUT_HOOK(sub_82D95F60, SetRenderStateHook<99>);   // D3DDevice_SetRenderState_LineWidth
+DEADPOOL_RENUT_HOOK(sub_82D95FD0, SetRenderStateHook<100>);  // D3DDevice_SetRenderState_Buffer2Frames
+
+// Deadpool sampler state setters (0x8359BFE8, indices 0-19).
+DEADPOOL_RENUT_HOOK(sub_82D978F0, SetSamplerStateHook<0>);   // D3DDevice_SetSamplerState_AddressU
+DEADPOOL_RENUT_HOOK(sub_82D97940, SetSamplerStateHook<1>);   // D3DDevice_SetSamplerState_AddressV
+DEADPOOL_RENUT_HOOK(sub_82D97990, SetSamplerStateHook<2>);   // D3DDevice_SetSamplerState_AddressW
+DEADPOOL_RENUT_HOOK(sub_82D97880, SetSamplerStateHook<3>);   // D3DDevice_SetSamplerState_BorderColor
+DEADPOOL_RENUT_HOOK(sub_82D97320, SetSamplerStateHook<4>);   // D3DDevice_SetSamplerState_MagFilter
+DEADPOOL_RENUT_HOOK(sub_82D97178, SetSamplerStateHook<5>);   // D3DDevice_SetSamplerState_MinFilter
+DEADPOOL_RENUT_HOOK(sub_82D974C0, SetSamplerStateHook<6>);   // D3DDevice_SetSamplerState_MipFilter
+DEADPOOL_RENUT_HOOK(sub_82D976E0, SetSamplerStateHook<7>);   // D3DDevice_SetSamplerState_MipMapLodBias
+DEADPOOL_RENUT_HOOK(sub_82D97780, SetSamplerStateHook<8>);   // D3DDevice_SetSamplerState_MaxMipLevel
+DEADPOOL_RENUT_HOOK(sub_82D975C0, SetSamplerStateHook<9>);   // D3DDevice_SetSamplerState_MaxAnisotropy
+DEADPOOL_RENUT_HOOK(sub_82D97420, SetSamplerStateHook<10>);  // D3DDevice_SetSamplerState_MagFilterZ
+DEADPOOL_RENUT_HOOK(sub_82D97278, SetSamplerStateHook<11>);  // D3DDevice_SetSamplerState_MinFilterZ
+DEADPOOL_RENUT_HOOK(sub_82D97518, SetSamplerStateHook<12>);  // D3DDevice_SetSamplerState_SeparateZFilterEnable
+DEADPOOL_RENUT_HOOK(sub_82D97800, SetSamplerStateHook<13>);  // D3DDevice_SetSamplerState_MinMipLevel
+DEADPOOL_RENUT_HOOK(sub_82D979E0, SetSamplerStateHook<14>);  // D3DDevice_SetSamplerState_TrilinearThreshold
+DEADPOOL_RENUT_HOOK(sub_82D97638, SetSamplerStateHook<15>);  // D3DDevice_SetSamplerState_AnisotropyBias
+DEADPOOL_RENUT_HOOK(sub_82D97A38, SetSamplerStateHook<16>);  // D3DDevice_SetSamplerState_HGradientExpBias
+DEADPOOL_RENUT_HOOK(sub_82D97A90, SetSamplerStateHook<17>);  // D3DDevice_SetSamplerState_VGradientExpBias
+DEADPOOL_RENUT_HOOK(sub_82D97AE8, SetSamplerStateHook<18>);  // D3DDevice_SetSamplerState_WhiteBorderColorW
+DEADPOOL_RENUT_HOOK(sub_82D97B40, SetSamplerStateHook<19>);  // D3DDevice_SetSamplerState_PointBorderEnable

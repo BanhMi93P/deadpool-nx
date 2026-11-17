@@ -203,7 +203,7 @@ plume::RenderStencilOp ConvertStencilOp(u32 op) {
   }
 }
 
-TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed) {
+TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed, bool is_gamma) {
   using F = plume::RenderFormat;
   using C = TexelConversion;
   auto plain = [](F host, u32 bytes) {
@@ -225,7 +225,7 @@ TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed) 
   case T::Fmt8_8_8_8:
   case T::Fmt8_8_8_8_A:
   case T::Fmt8_8_8_8_As16_16_16_16:
-    return plain(is_signed ? F::R8G8B8A8_SNORM : F::R8G8B8A8_UNORM, 4);
+    return plain(is_signed ? F::R8G8B8A8_SNORM : (is_gamma ? F::R8G8B8A8_UNORM_SRGB : F::R8G8B8A8_UNORM), 4);
   case T::Fmt1_5_5_5:
     return expand(F::R8G8B8A8_UNORM, C::R5G5B5A1, 2, 4);
   case T::Fmt5_6_5:
@@ -249,13 +249,13 @@ TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed) 
     return expand(F::R16G16B16A16_UNORM, C::R10G11B11, 4, 8);
   case T::FmtDXT1:
   case T::FmtDXT1_As16_16_16_16:
-    return bc(F::BC1_UNORM, 8);
+    return bc(is_gamma ? F::BC1_UNORM_SRGB : F::BC1_UNORM, 8);
   case T::FmtDXT2_3:
   case T::FmtDXT2_3_As16_16_16_16:
-    return bc(F::BC2_UNORM, 16);
+    return bc(is_gamma ? F::BC2_UNORM_SRGB : F::BC2_UNORM, 16);
   case T::FmtDXT4_5:
   case T::FmtDXT4_5_As16_16_16_16:
-    return bc(F::BC3_UNORM, 16);
+    return bc(is_gamma ? F::BC3_UNORM_SRGB : F::BC3_UNORM, 16);
   case T::FmtDXT5A:
     return bc(F::BC4_UNORM, 8);
   case T::FmtDXT3A: {  // vivapinata-nx (2026-11-02): Viva Pinata's 512x512 masks; no host format holds it alone

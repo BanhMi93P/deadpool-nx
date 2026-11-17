@@ -117,6 +117,10 @@ REXCVAR_DEFINE_BOOL(banjo_d3d_native_draw_vertices, false, "Katamari/Not built",
 // here (d3d/hooks/draw.cpp); the captures' video waits on it.
 std::atomic<uint64_t> g_banjo_game_frames{0};
 
+REXCVAR_DEFINE_BOOL(deadpool_perf_log, false, "Katamari/Debug",
+                    "Enable comprehensive CPU, GPU, memory, stack-sampling, and workload performance logging")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 
 // g_banjo_store_cards (whether the generated code marks the store cards) is cpu/banjo_hot_guest.cpp's again.
 

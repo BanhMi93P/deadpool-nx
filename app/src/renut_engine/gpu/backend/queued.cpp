@@ -140,11 +140,15 @@ namespace {
 // the queue in order.
 enum class SnapshotKind : u8 { Whole, Rebase, Delta };
 
+constexpr size_t kInlineDeltaBytes = 2048;
+
 // What a queued draw reads besides guest memory the game keeps until a fence.
 struct DrawCapture {
-  std::vector<u8> state;  // the device, kDeviceSnapshotSize bytes (or a delta: SnapshotKind)
+  std::vector<u8> state;  // the device, kDeviceSnapshotSize bytes (or a delta > kInlineDeltaBytes)
   std::vector<u8> vertices, indices;
   SnapshotKind snapshot = SnapshotKind::Whole;  // banjo-nx (2026-10-20, from sa2-nx)
+  bool state_in_vec = false;
+  u32 state_size = 0;
   std::vector<u8> verify;  // banjo-nx (from sa2-nx): the whole device as well (banjo_renut_snapshot_deltas_verify)
   DrawCall call;
   u32 binding = 0;  // halo3-nx (2026-11-03, banjo_renut_recorded_binds): the shader's bind at the draw (LastBindingOf)
@@ -174,7 +178,15 @@ struct DrawCapture {
   // blur-nx (2026-11-13, #13's fix): the cache entries whose registers a narrowed capture holds (NarrowCheckLocked).
   const ShaderCacheEntry *narrow_vs = nullptr;
   const ShaderCacheEntry *narrow_ps = nullptr;
+  alignas(64) u8 delta_buf[kInlineDeltaBytes];
 };
+
+inline const u8 *CaptureBytes(const DrawCapture &c) {
+  return c.state_in_vec ? c.state.data() : c.delta_buf;
+}
+inline u32 CaptureSize(const DrawCapture &c) {
+  return c.state_in_vec ? u32(c.state.size()) : c.state_size;
+}
 
 // banjo-nx (banjo_renut_capture_pool): a draw's capture comes from a pool and goes back to it once the render thread
 // has drawn it. Each draw made three heap allocations on the game thread (the capture, its 12.7 KB device snapshot,
@@ -250,6 +262,7 @@ public:
       capture->vertices.clear();
       capture->indices.clear();
       capture->narrowed = false;  // blur-nx (2026-11-13, #13)
+      capture->binding = 0;
       capture->held = HeldBytes(*capture);  // its lines are this thread's now: not read again under the lock
       if (CaptureBatchesOn() && render_thread) {
         std::vector<DrawCapture *> &given = render_given_;
@@ -328,6 +341,8 @@ struct DeferredDraw {
   DrawCapture *capture = nullptr;  // owned (g_capture_pool)
   const u8 *scratch = nullptr;
   u32 bytes = 0;
+  const u8 *index_scratch = nullptr;
+  u32 index_bytes = 0;
 };
 std::mutex g_deferred_mutex;
 std::unordered_map<u32, DeferredDraw> g_deferred;
@@ -377,7 +392,7 @@ constexpr u32 kDeltaUnreadEnd = kDeltaVertexF - 0x300;  // 0x480: the fetch cons
 // chunk before the one holding the vertex declaration). SA2: 11008-12224.
 // katamari-nx: a 64-byte chunk boundary, not a field: 11776 is still the last boundary before Beautiful Katamari's
 // vertex declaration (+11812), and the words between are private ones the render thread does not read.
-constexpr u32 kDeltaPrivateUnreadBegin = 10880, kDeltaPrivateUnreadEnd = 11776;
+constexpr u32 kDeltaPrivateUnreadBegin = 11008, kDeltaPrivateUnreadEnd = 12224;
 constexpr bool DeltaChunkRead(u32 i) {
   const u32 at = DeltaChunkOffset(i);
   return !(at < kDeltaUnreadEnd || (at >= kDeltaPrivateUnreadBegin && at + 64 <= kDeltaPrivateUnreadEnd));
@@ -400,7 +415,7 @@ constexpr DeltaChunkList MakeDeltaChunkList(bool narrow) {
 }
 constexpr DeltaChunkList kDeltaAllChunks = MakeDeltaChunkList(false);
 constexpr DeltaChunkList kDeltaReadChunks = MakeDeltaChunkList(true);
-static_assert(kDeltaReadChunks.count == 39);  // N&B (SA2 40; bangaio-nx's XDK 20209: 40)
+static_assert(kDeltaReadChunks.count == 40);  // Deadpool XDK 21173 (matches SA2 40)
 
 // bangaio-nx (2026-10-29, banjo_renut_delta_masks, A/B 81 here, 73 in bangaio-nx): a chunk list as runs of whole chunks at consecutive
 // offsets, and each short chunk (the tail's last, 24 bytes in XDK 20209) as a run of its own. CaptureDelta asks
@@ -446,6 +461,34 @@ inline bool ShortChunkDiffers(const u8 *a, const u8 *b, u32 size) {
   for (; k < size; ++k)
     diff |= u8(a[k] ^ b[k]);
   return diff != 0;
+}
+inline void ShortChunkCopy(u8 *dst, const u8 *src, u32 size) {
+  if (size >= 16) {
+    u32 k = 0;
+    for (; k + 16 <= size; k += 16)
+      std::memcpy(dst + k, src + k, 16);
+    if (k < size)
+      std::memcpy(dst + size - 16, src + size - 16, 16);
+    return;
+  }
+  if (size >= 8) {
+    std::memcpy(dst, src, 8);
+    std::memcpy(dst + size - 8, src + size - 8, 8);
+    return;
+  }
+  if (size >= 4) {
+    std::memcpy(dst, src, 4);
+    std::memcpy(dst + size - 4, src + size - 4, 4);
+    return;
+  }
+  for (u32 k = 0; k < size; ++k)
+    dst[k] = src[k];
+}
+inline void CopyDeltaChunk(u8 *dst, const u8 *src, u32 size) {
+  if (size == kDeltaUnitBytes)
+    std::memcpy(dst, src, kDeltaUnitBytes);
+  else
+    ShortChunkCopy(dst, src, size);
 }
 constexpr DeltaRuns kDeltaAllRuns = MakeDeltaRuns(kDeltaAllChunks);
 constexpr DeltaRuns kDeltaReadRuns = MakeDeltaRuns(kDeltaReadChunks);
@@ -505,11 +548,15 @@ struct DeltaChain {
   // 'cross': the draws made whole that way (the 10 s report's).
   u32 deferred_device = 0;
   uint64_t cross = 0;
+  u32 last_target_vas[5] = {};
+  u32 last_stack_headers_count = 0;
+  bool stack_targets_valid = false;
+  u32 last_vs_word = 0;
+  u32 last_vs_binding = 0;
+  bool last_vs_valid = false;
   alignas(64) u8 shadow[d3d::kDeviceSnapshotSize];  // the device at its last draw (the chunks)
-  // bangaio-nx (2026-10-29, banjo_renut_small_captures): each delta is written here, then copied into its capture at its
-  // size. The same lines every draw: they stay in the game thread's cache.
-  alignas(64) u8 scratch[kDeltaMaxBytes];
 };
+static_assert(d3d::kDeviceOffsetDepthStencil == d3d::kDeviceOffsetRenderTargets + 16);
 DeltaChain g_delta;
 
 // The render thread's side: the device the chain's draws rebuild.
@@ -631,17 +678,17 @@ const u8 *DeviceForDraw(const DrawCapture &capture) {
       g_chain_hint.changed[0] = g_chain_hint.changed[1] = ~uint64_t(0);
       g_chain_hint.fields = kFieldsAll;
     }
-    return capture.narrowed ? capture.narrow.get() : capture.state.data();  // blur-nx (2026-11-13, #13)
+    return capture.narrowed ? capture.narrow.get() : CaptureBytes(capture);  // blur-nx (2026-11-13, #13)
   }
   if (capture.snapshot == SnapshotKind::Rebase) {
-    std::memcpy(g_delta_device, capture.state.data(), d3d::kDeviceSnapshotSize);
+    std::memcpy(g_delta_device, CaptureBytes(capture), d3d::kDeviceSnapshotSize);
     g_chain_id = (uint64_t(1) << 63) | ++g_chain_count;  // its first draw compares every group
     g_chain_vs_dirty = g_chain_ps_dirty = ~uint64_t(0);
     g_chain_hint.seq = g_chain_seq = NextChainSeq();
     g_chain_hint.changed[0] = g_chain_hint.changed[1] = ~uint64_t(0);  // a whole copy: every chunk
     g_chain_hint.fields = kFieldsAll;
   } else {
-    const u8 *from = capture.state.data();
+    const u8 *from = CaptureBytes(capture);
     DeltaHeader h;
     std::memcpy(&h, from, sizeof(h));
     from += sizeof(h);
@@ -658,18 +705,15 @@ const u8 *DeviceForDraw(const DrawCapture &capture) {
         const u32 i = word * 64 + u32(std::countr_zero(bits));
         const u32 size = DeltaChunkSize(i);
         // Whole chunks as a fixed-size copy, which stays inline.
-        if (size == kDeltaUnitBytes)
-          std::memcpy(g_delta_device + DeltaChunkOffset(i), from, kDeltaUnitBytes);
-        else
-          std::memcpy(g_delta_device + DeltaChunkOffset(i), from, size);
+        CopyDeltaChunk(g_delta_device + DeltaChunkOffset(i), from, size);
         from += size;
       }
     }
     for (const auto [dirty, base] : {std::pair{h.vs, kDeltaVertexF}, std::pair{h.ps, kDeltaPixelF}}) {
       ForEachGroupRun(dirty, [&](u32 first, u32 count) {
-        const u32 bytes = count * kDeltaUnitBytes;
-        std::memcpy(g_delta_device + base + first * kDeltaUnitBytes, from, bytes);
-        from += bytes;
+        u8 *dst = g_delta_device + base + first * kDeltaUnitBytes;
+        for (u32 k = 0; k < count; ++k, dst += kDeltaUnitBytes, from += kDeltaUnitBytes)
+          std::memcpy(dst, from, kDeltaUnitBytes);
       });
     }
   }
@@ -728,7 +772,7 @@ void NarrowCheckLocked(const DrawCapture &capture, const u8 *device) {
 void QueueCapture(DrawCapture *capture) {
   // banjo-nx (2026-10-20, from sa2-nx, banjo_renut_prefetch_next): the capture and its device bytes, written on the game thread's core,
   // are fetched into the render thread's cache while it does the item before this one.
-  render_thread::QueuePrefetched(capture, capture->narrowed ? capture->narrow.get() : capture->state.data(), [capture] {
+  render_thread::QueuePrefetched(capture, capture->narrowed ? capture->narrow.get() : CaptureBytes(*capture), [capture] {
     DrawCall call = capture->call;
     if (!capture->vertices.empty())
       call.up_vertices = capture->vertices.data();
@@ -767,6 +811,8 @@ DrawCapture *Capture(u32 device_va, const DrawCall &call) {
   // assign() keeps a pooled capture's storage (Snapshot() made a new vector each time).
   const auto *bytes = reinterpret_cast<const u8 *>(device);
   capture->state.assign(bytes, bytes + d3d::kDeviceSnapshotSize);
+  capture->state_in_vec = true;
+  capture->state_size = d3d::kDeviceSnapshotSize;
   capture->snapshot = SnapshotKind::Whole;  // banjo-nx (from sa2-nx)
   CaptureStackHeaders(bytes, capture->stack_headers);  // blur-nx (2026-11-10, port 76; its key 215)
   capture->verify.clear();
@@ -907,12 +953,27 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
   capture->call.up_vertices = nullptr;
   capture->call.up_indices = nullptr;
   const auto *bytes = reinterpret_cast<const u8 *>(device);
-  CaptureStackHeaders(bytes, capture->stack_headers);  // blur-nx (2026-11-10, port 76; its key 215)
+  u32 tvas[5];
+  std::memcpy(tvas, bytes + d3d::kDeviceOffsetRenderTargets, sizeof(tvas));
+  const bool same_stack_targets =
+      c.stack_targets_valid && c.last_stack_headers_count == 0 &&
+      ((tvas[0] ^ c.last_target_vas[0]) | (tvas[1] ^ c.last_target_vas[1]) | (tvas[2] ^ c.last_target_vas[2]) |
+       (tvas[3] ^ c.last_target_vas[3]) | (tvas[4] ^ c.last_target_vas[4])) == 0;
+  if (same_stack_targets) {
+    capture->stack_headers.count = 0;
+  } else {
+    CaptureStackHeaders(bytes, capture->stack_headers);  // blur-nx (2026-11-10, port 76; its key 215)
+    std::memcpy(c.last_target_vas, tvas, sizeof(tvas));
+    c.last_stack_headers_count = capture->stack_headers.count;
+    c.stack_targets_valid = true;
+  }
   if (c.device.load(std::memory_order_relaxed) != device) {
     // The chain's first draw (or a frame's): the whole device, which the render thread takes as its own.
     for (auto &mask : device->m_Pending)
       mask = 0;
     capture->state.assign(bytes, bytes + d3d::kDeviceSnapshotSize);
+    capture->state_in_vec = true;
+    capture->state_size = d3d::kDeviceSnapshotSize;
     std::memcpy(c.shadow, bytes, d3d::kDeviceSnapshotSize);
     c.device.store(device, std::memory_order_relaxed);
     c.vs = c.ps = 0;
@@ -926,12 +987,12 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     for (auto &mask : device->m_Pending)
       mask = 0;
     std::vector<u8> &out = capture->state;
-    // bangaio-nx (2026-10-29, banjo_renut_small_captures): into the chain's scratch, copied into the capture at its size
-    // below; off, into the capture's own storage at its greatest size.
     const bool small = SmallCapturesOn();
-    if (!small && out.size() < kDeltaMaxBytes)
+    const u32 const_bytes = u32(std::popcount(vs) + std::popcount(ps)) * kDeltaUnitBytes;
+    bool in_vec = !small || (sizeof(DeltaHeader) + const_bytes > kInlineDeltaBytes);
+    if (in_vec && out.size() < kDeltaMaxBytes)
       out.resize(kDeltaMaxBytes);  // once per pooled capture: written below, never cleared
-    u8 *const begin = small ? c.scratch : out.data();
+    u8 *begin = in_vec ? out.data() : capture->delta_buf;
     u8 *to = begin + sizeof(DeltaHeader);
     DeltaHeader h{};
     u32 chunks = 0;
@@ -939,13 +1000,17 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     // constant-size copies (inline q-register pairs; a variable size was two memcpy calls).
     const auto take = [&](u32 i) {
       const u32 at = DeltaChunkOffset(i), size = DeltaChunkSize(i);
-      if (size == kDeltaUnitBytes) {
-        std::memcpy(c.shadow + at, bytes + at, kDeltaUnitBytes);
-        std::memcpy(to, bytes + at, kDeltaUnitBytes);
-      } else {
-        std::memcpy(c.shadow + at, bytes + at, size);
-        std::memcpy(to, bytes + at, size);
+      CopyDeltaChunk(c.shadow + at, bytes + at, size);
+      if (!in_vec && size_t(to - begin) + size + const_bytes > kInlineDeltaBytes) [[unlikely]] {
+        const size_t used = size_t(to - begin);
+        if (out.size() < kDeltaMaxBytes)
+          out.resize(kDeltaMaxBytes);
+        std::memcpy(out.data() + sizeof(DeltaHeader), begin + sizeof(DeltaHeader), used - sizeof(DeltaHeader));
+        begin = out.data();
+        to = begin + used;
+        in_vec = true;
       }
+      CopyDeltaChunk(to, bytes + at, size);
       to += size;
       h.chunks[i / 64] |= uint64_t(1) << (i % 64);
       ++chunks;
@@ -976,19 +1041,19 @@ DrawCapture *CaptureDelta(u32 device_va, const DrawCall &call) {
     }
     for (const auto [dirty, base] : {std::pair{vs, kDeltaVertexF}, std::pair{ps, kDeltaPixelF}}) {
       ForEachGroupRun(dirty, [&](u32 first, u32 count) {
-        const u32 group_bytes = count * kDeltaUnitBytes;
-        std::memcpy(to, bytes + base + first * kDeltaUnitBytes, group_bytes);
-        to += group_bytes;
+        const u8 *src = bytes + base + first * kDeltaUnitBytes;
+        for (u32 k = 0; k < count; ++k, to += kDeltaUnitBytes, src += kDeltaUnitBytes)
+          std::memcpy(to, src, kDeltaUnitBytes);
       });
     }
     h.vs = vs;
     h.ps = ps;
     std::memcpy(begin, &h, sizeof(h));
-    if (small)
-      out.assign(begin, to);  // the capture's storage kept (a pooled vector keeps its capacity)
+    capture->state_in_vec = in_vec;
+    capture->state_size = u32(to - begin);
     capture->snapshot = SnapshotKind::Delta;
     ++c.deltas;
-    c.bytes += uint64_t(to - begin);
+    c.bytes += uint64_t(capture->state_size);
     c.chunks += chunks;
     c.groups += uint64_t(std::popcount(vs) + std::popcount(ps));
   }
@@ -1006,6 +1071,8 @@ void SnapshotDeltasNewFrame() {
     return;
   std::lock_guard lock(g_delta.mutex);
   g_delta.device.store(nullptr, std::memory_order_relaxed);  // the frame's first draw rebases: whatever went wrong lasts a frame at most
+  g_delta.stack_targets_valid = false;
+  g_delta.last_vs_valid = false;
 }
 
 void ForgetSnapshotDeltas(const void *device) {
@@ -1019,6 +1086,8 @@ void ForgetSnapshotDeltas(const void *device) {
     return;
   std::lock_guard lock(g_delta.mutex);
   g_delta.device.store(nullptr, std::memory_order_relaxed);
+  g_delta.stack_targets_valid = false;
+  g_delta.last_vs_valid = false;
 }
 
 std::string SnapshotDeltaReport() {
@@ -1076,15 +1145,15 @@ std::string SnapshotDeltaReport() {
 // out of the L1, and the compare then waited on them a group at a time.
 void PrefetchDeltaLines(u32 device_va) {
   const u8 *device = GuestPtr<const u8>(device_va);
-  if (!device)
+  if (!device || g_delta.device.load(std::memory_order_relaxed) != reinterpret_cast<const d3d::Device *>(device))
     return;
+  // Prime once per 256B across the guest device's compared runs; g_delta.shadow
+  // stays hot on the game thread, and hardware stream prefetch handles intra-run lines.
   const DeltaRuns &runs = DeltasNarrowOn() ? kDeltaReadRuns : kDeltaAllRuns;
   for (u32 r = 0; r < runs.count; ++r) {
     const u32 at = DeltaChunkOffset(runs.run[r].first);
-    for (u32 k = 0; k < runs.run[r].count; ++k) {
+    for (u32 k = 0; k < runs.run[r].count; k += 4)
       __builtin_prefetch(device + at + k * kDeltaUnitBytes);
-      __builtin_prefetch(g_delta.shadow + at + k * kDeltaUnitBytes);
-    }
   }
 }
 
@@ -1113,12 +1182,23 @@ void QueueDraw(u32 device_va, const DrawCall &call, u32 up_vertex_bytes, u32 up_
   if (const auto *guest_device = GuestPtr<const u8>(device_va)) {
     u32 vs_word;
     std::memcpy(&vs_word, guest_device + d3d::kDeviceOffsetVertexShader, 4);
-    capture->binding = LastBindingOf(__builtin_bswap32(vs_word));
+    if (deltas && !cross && g_delta.last_vs_valid && g_delta.last_vs_word == vs_word) {
+      capture->binding = g_delta.last_vs_binding;
+    } else {
+      const u32 binding = LastBindingOf(__builtin_bswap32(vs_word));
+      capture->binding = binding;
+      if (deltas && !cross) {
+        g_delta.last_vs_word = vs_word;
+        g_delta.last_vs_binding = binding;
+        g_delta.last_vs_valid = true;
+      }
+    }
   }
   QueueCapture(capture);
 }
 
-void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u32 bytes) {
+void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u32 bytes,
+                       const u8 *index_scratch, u32 index_bytes) {
   NoteDrawer(device_va);  // blur-nx (2026-11-13, M-31's census)
   FlushDeferredVertices(device_va);
   RunReadyCallbacks();
@@ -1149,7 +1229,7 @@ void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u
       if (!capture)
         return;
       std::lock_guard lock(g_deferred_mutex);
-      g_deferred[device_va] = {capture, scratch, bytes};
+      g_deferred[device_va] = {capture, scratch, bytes, index_scratch, index_bytes};
       g_deferred_count.store(g_deferred.size(), std::memory_order_release);
       g_delta.deferred_device = device_va;  // blur-nx (2026-11-13, #51): cleared when FlushDeferredVertices queues it
       return;
@@ -1175,7 +1255,7 @@ void QueueDeferredDraw(u32 device_va, const DrawCall &call, const u8 *scratch, u
   std::lock_guard lock(g_deferred_mutex);
   DeferredDraw &slot = g_deferred[device_va];
   g_capture_pool.Give(slot.capture);  // one not flushed (the original replaced it the same way)
-  slot = {capture, scratch, bytes};
+  slot = {capture, scratch, bytes, index_scratch, index_bytes};
   g_deferred_count.store(g_deferred.size(), std::memory_order_release);
 }
 
@@ -1198,7 +1278,10 @@ void FlushDeferredVertices(u32 device_va) {
     g_deferred.erase(it);
     g_deferred_count.store(g_deferred.size(), std::memory_order_release);
   }
-  deferred.capture->vertices.assign(deferred.scratch, deferred.scratch + deferred.bytes);
+  if (deferred.scratch && deferred.bytes)
+    deferred.capture->vertices.assign(deferred.scratch, deferred.scratch + deferred.bytes);
+  if (deferred.index_scratch && deferred.index_bytes)
+    deferred.capture->indices.assign(deferred.index_scratch, deferred.index_scratch + deferred.index_bytes);
   // blur-nx (2026-11-13, #52's census): the vertex bytes the flush copies (a scratch ring could leave them in place).
   g_deferred_vertex_bytes.fetch_add(deferred.bytes, std::memory_order_relaxed);
   g_deferred_vertex_draws.fetch_add(1, std::memory_order_relaxed);

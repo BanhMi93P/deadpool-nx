@@ -47,6 +47,7 @@ void Start();  // src/cpu/katamari_stage_diag.cpp
 #include <string>
 
 REXCVAR_DECLARE(bool, banjo_show_fps);  // banjo-nx (2026-10-21): profiler/profiler.cpp
+REXCVAR_DECLARE(bool, deadpool_perf_log);  // katamari_keys.cpp: master CPU/GPU/RAM telemetry toggle
 
 REXCVAR_DECLARE(bool, banjo_mesa_disk_cache_off);
 REXCVAR_DECLARE(bool, masseffect_nvk_cache_per_stage);
@@ -137,6 +138,26 @@ public:
     // Native renderer: with masseffect_renderer_native = true the graphics system is the app's own
     // (src/me, from masseffect-nx) and the emulated Xenos GPU plugin is not loaded (ReXApp only loads it
     // when config.graphics is empty).
+    void OnPostConfig() override {
+        if (!REXCVAR_GET(deadpool_perf_log)) return;
+        const auto enable_default = [](std::string_view name, std::string_view value) {
+            if (rex::cvar::GetFlagSource(name) <= rex::cvar::Source::kConfig) {
+                rex::cvar::SetFlagByName(name, value);
+            }
+        };
+        enable_default("log_level", "info");
+        enable_default("log_file_writer", "true");
+        enable_default("switch_profile_stacks", "true");
+        enable_default("renut_gpu_profile", "10.0");
+        enable_default("renut_gpu_profile_counters", "true");
+        enable_default("banjo_renut_diag_gpu_shaders", "true");
+        enable_default("sasrt_gpu_diag_profile_vs", "true");
+        enable_default("sasrt_gpu_diag_resolve_split", "true");
+        enable_default("renut_memory_report", "10.0");
+        enable_default("banjo_renut_heap_walk_every", "3");
+        enable_default("banjo_show_fps", "true");
+    }
+
     void OnPreSetup(rex::RuntimeConfig& config) override {
         banjo::ApplyMasterSwitches();
 #if REX_PLATFORM_SWITCH
@@ -216,7 +237,7 @@ public:
         // One log line with every enhancement and whether it is active (src/cpu/banjo_enhancements.h).
         banjo::LogEnhancements();
         // katamari-nx (2026-11-01): katamari_diag_game_state (off): the stage fields of the game state, as they change.
-        katamari::stage_diag::Start();
+        // katamari::stage_diag::Start();  // katamari-only address 0x82B0B568
         // PC: function-level CPU profile (banjo_pc_profile_s = N seconds per report; 0 = off; from futari-nx).
         banjo::pc_profiler::Start();
         // Switch: per-thread CPU accounting, the optional sampler and the stall watchdog.
@@ -261,21 +282,55 @@ public:
         banjo::pgo::Stop();
     }
 
-    // A game_root folder next to the executable is used when no path was given.
-    // On the Switch that is sdmc:/switch/katamari-nx/game_root (the extracted disc).
+    // A game / game_root folder next to the executable is used when no path was given.
+    // On the Switch that is sdmc:/switch/deadpool-nx/game (or game_root).
     void OnConfigurePaths(rex::PathConfig& paths) override {
 #if defined(KATAMARI_BUILTIN_CONFIG)
         // The player's settings file. Not renut.toml: the test builds' full one, left on an SD card, would override
         // every built-in setting.
-        paths.config_path = rex::filesystem::GetExecutableFolder() / "katamari.toml";
+        paths.config_path = rex::filesystem::GetExecutableFolder() / "deadpool.toml";
 #endif
         if (paths.game_data_root.empty()) {
             const auto folder = rex::filesystem::GetExecutableFolder();
             std::error_code ec;
-            const auto extracted = folder / "game_root";
-            if (!folder.empty() && std::filesystem::is_directory(extracted, ec)) {
-                paths.game_data_root = extracted;
+#if REX_PLATFORM_SWITCH
+            for (const char* sub : {"game", "game_root"}) {
+                const auto candidate = folder / sub;
+                if (!folder.empty() && std::filesystem::is_directory(candidate, ec)) {
+                    paths.game_data_root = candidate;
+                    break;
+                }
             }
+#else
+            if (!folder.empty()) {
+                for (auto candidate = folder; !candidate.empty(); candidate = candidate.parent_path()) {
+                    bool found = false;
+                    for (const auto& sub : {std::filesystem::path("game"),
+                                            std::filesystem::path("Deadpool") / "game",
+                                            std::filesystem::path("game_root"),
+                                            std::filesystem::path("input") / "game",
+                                            std::filesystem::path("assets") / "game_root"}) {
+                        auto pack = candidate / sub;
+                        pack += ".nxpack";
+                        if (std::filesystem::is_regular_file(candidate / sub / "default.xex", ec) ||
+                            std::filesystem::is_regular_file(pack, ec)) {
+                            paths.game_data_root = candidate / sub;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found || candidate == candidate.parent_path()) {
+                        break;
+                    }
+                }
+            }
+            if (paths.game_data_root.empty()) {
+                const auto cwd_game = std::filesystem::current_path() / "game";
+                if (std::filesystem::is_regular_file(cwd_game / "default.xex", ec)) {
+                    paths.game_data_root = cwd_game;
+                }
+            }
+#endif
         }
         renut::dlc::SetUserDataRoot(paths.user_data_root);  // the folder the DLC installer checks for installed ones
     }

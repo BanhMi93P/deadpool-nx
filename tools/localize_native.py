@@ -692,9 +692,32 @@ class Hooks:
             for d, _, fs in os.walk(root):
                 if os.path.abspath(d).startswith(os.path.abspath(os.path.join(APP, 'src', 'cpu', 'hot'))):
                     continue  # the list of the natives themselves
+                norm_d = d.replace('\\', '/') + '/'
+                if any(s in norm_d for s in ('/app/src/me/', '/app/src/native/')):
+                    continue
                 for fn in fs:
                     if fn.endswith(('.cpp', '.h', '.inc', '.hpp', '.c')):
-                        paths.append((os.path.join(d, fn), False))
+                        full_path = os.path.join(d, fn)
+                        norm_p = full_path.replace('\\', '/')
+                        if any(norm_p.endswith(s) for s in (
+                            '/app/src/cpu/banjo_hot_guest.cpp', '/app/src/cpu/banjo_hot_guest.h',
+                            '/app/src/cpu/katamari_stage_diag.cpp', '/app/src/cpu/banjo_pool_lock.cpp',
+                            '/app/src/cpu/banjo_reverb_native.cpp', '/app/src/cpu/banjo_xaudio_native.cpp',
+                            '/app/src/cpu/banjo_forms_selfcheck.cpp', '/app/src/cpu/blur_microbench.cpp',
+                            '/app/src/renut_engine/gpu/banjo_shared_hooks.h',
+                            '/app/src/renut_engine/gpu/d3d/hooks/state.cpp',
+                            '/app/src/renut_engine/gpu/guest/widescreen.cpp',
+                            '/app/src/renut_engine/gpu/guest/widescreen.h',
+                            '/app/src/renut_engine/gpu/guest/photo_capture.cpp',
+                            '/app/src/renut_engine/StopNSwap.cpp', '/app/src/renut_engine/cvar_menu.cpp',
+                            '/app/src/renut_engine/env_map_pool.cpp', '/app/src/renut_engine/frameHooks.cpp',
+                            '/app/src/renut_engine/frontend_debug_menu.cpp', '/app/src/renut_engine/hooks.cpp',
+                            '/app/src/renut_engine/mnk_controls.cpp', '/app/src/renut_engine/mnk_controls.h',
+                            '/app/src/renut_engine/shader_dump.cpp', '/app/src/renut_engine/sleep.h',
+                            '/app/src/renut_engine/thread_slots.cpp', '/app/src/renut_engine/townsfolk.cpp',
+                        )):
+                            continue
+                        paths.append((full_path, False))
         for path, toml in paths:
             try:
                 text = open(path, encoding='utf-8', errors='ignore').read()
@@ -704,9 +727,12 @@ class Hooks:
             if not toml:
                 text = strip_windows_only(text)  # blur-nx (2026-11-13, M-28)
             text = re.sub(r'__imp__\w+', ' ', text)
-            self.addresses.update(m.upper() for m in re.findall(r'(?<![0-9A-Fa-f])(82[0-9A-Fa-f]{6})(?![0-9A-Fa-f])', text))
             if not toml:
+                hook_text = '\n'.join(re.findall(r'(?:DEADPOOL_RENUT_HOOK|PPC_HOOK|REX_HOOK)(?:_RAW)?\s*\([^)]*\)', text))
+                self.addresses.update(m.upper() for m in re.findall(r'(?<![0-9A-Fa-f])(8[23][0-9A-Fa-f]{6})(?![0-9A-Fa-f])', hook_text))
                 self.words.update(re.findall(r'\b[A-Za-z_]\w{5,}\b', text))
+            else:
+                self.addresses.update(m.upper() for m in re.findall(r'(?<![0-9A-Fa-f])(8[23][0-9A-Fa-f]{6})(?![0-9A-Fa-f])', text))
         self.natives = set(natives)
 
     def replaced(self, name):

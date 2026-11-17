@@ -89,6 +89,7 @@ struct HostSurface {
   // banjo-nx (2026-10-19, banjo_renut_resolve_skip): bumped by every draw that can write it (a colour write mask; for
   // depth, a depth write or stencil writes) and every clear of it; part of a resolve's signature.
   uint64_t writes = 0;
+  uint64_t draws = 0;
   // blur-nx (2026-11-10, port 76; its key 216: blur_renut_sample_grid_resolve): g_surface_write_seq at the last draw into
   // it (not its clears).
   uint64_t blur_draw_seq = 0;

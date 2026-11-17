@@ -34,6 +34,8 @@ class HostPathEntry : public Entry {
   // rr6-nx (2026-11-10): host_path_ is an LZ4 block file (NAME.lz4b, rex/filesystem/lz4_blocks.h) shown as NAME with
   // the size of the file it holds; opened through OpenLz4Blocks, never mapped or written.
   bool lz4_blocks() const { return lz4_blocks_; }
+  // Real byte size of the backing host file on disk (differs from size() for in-memory patched or .lz4b files).
+  uint64_t disk_size() const { return disk_size_; }
 
   /*
    * "All the children of this directory are already known."
@@ -76,6 +78,7 @@ class HostPathEntry : public Entry {
   std::filesystem::path host_path_;
   bool children_complete_ = false;
   bool lz4_blocks_ = false;
+  uint64_t disk_size_ = 0;
 };
 
 }  // namespace rex::filesystem

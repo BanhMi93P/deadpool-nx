@@ -26,12 +26,15 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <rex/platform.h>
 
 #if REX_PLATFORM_SWITCH
 #include <pthread.h>
+#include <rex/sys_counters.h>
 #include "profiler/switch_cpu_profiler.h"  // banjo-nx (2026-10-28): the A/B halves' CPU a frame
+extern "C" void RexSwitchPerfHitch(uint64_t start, uint64_t end);
 #endif
 
 #include <plume_render_interface.h>
@@ -911,9 +914,14 @@ int64_t SteadyMs() {
       .count();
 }
 
+std::atomic<uint64_t> g_workload_pipelines_window{0};
+std::atomic<uint64_t> g_workload_pipelines_frame{0};
+
 void NotePipelineBuilt() {
   g_pipelines_built.fetch_add(1, std::memory_order_relaxed);
   g_last_build_ms.store(SteadyMs(), std::memory_order_relaxed);
+  g_workload_pipelines_window.fetch_add(1, std::memory_order_relaxed);
+  g_workload_pipelines_frame.fetch_add(1, std::memory_order_relaxed);
 }
 
 // The A/B word (banjo_renut_ab); the header reads it inline.
@@ -1189,6 +1197,134 @@ void AbApply(int target, bool on) {
 // 2026-10-20: CountDrawSource's counts (the render thread's).
 std::atomic<uint64_t> g_draw_source[2];
 
+struct PerfDiagState {
+  PerfDiagState() {
+    game_ms.reserve(1024);
+    render_ms.reserve(1024);
+    gpu_ms.reserve(1024);
+  }
+  std::mutex mutex;
+  std::vector<double> game_ms;
+  std::vector<double> render_ms;
+  std::vector<double> gpu_ms;
+  std::chrono::steady_clock::time_point last_game_frame{};
+  uint64_t last_game_tick = 0;
+  uint64_t hitches_over_35ms = 0;
+  uint64_t rt_frames = 0;
+  uint64_t draws_total = 0, draws_max = 0;
+  uint64_t verts_total = 0, verts_max = 0;
+  uint64_t memexport_total = 0, memexport_max = 0;
+  uint64_t converts_total = 0, convert_bytes_total = 0, converts_max = 0;
+  uint64_t submits_total = 0, submits_max = 0;
+  uint64_t resolves_total = 0, resolves_max = 0;
+  uint64_t tex_uploads_total = 0, tex_upload_bytes_total = 0;
+  uint64_t tex_uploads_max = 0, tex_upload_bytes_max = 0;
+};
+
+PerfDiagState &PerfDiag() {
+  static PerfDiagState s;
+  return s;
+}
+
+struct DistStats {
+  size_t count = 0;
+  double avg = 0.0;
+  double p50 = 0.0;
+  double p95 = 0.0;
+  double p99 = 0.0;
+  double max = 0.0;
+  uint32_t over_33 = 0;
+  uint32_t over_50 = 0;
+  uint32_t over_100 = 0;
+};
+
+DistStats ComputeDist(std::vector<double> &v) {
+  DistStats d{};
+  if (v.empty())
+    return d;
+  d.count = v.size();
+  double sum = 0.0;
+  for (double x : v) {
+    sum += x;
+    if (x > 33.333)
+      ++d.over_33;
+    if (x > 50.0)
+      ++d.over_50;
+    if (x > 100.0)
+      ++d.over_100;
+  }
+  std::sort(v.begin(), v.end());
+  auto pct = [&](double q) -> double {
+    const size_t idx = std::min(v.size() - 1, static_cast<size_t>(q * double(v.size() - 1)));
+    return v[idx];
+  };
+  d.avg = sum / double(v.size());
+  d.p50 = pct(0.50);
+  d.p95 = pct(0.95);
+  d.p99 = pct(0.99);
+  d.max = v.back();
+  return d;
+}
+
+void ReportDetailedPerfAndWorkload(double since) {
+  std::vector<double> g, r, q;
+  uint64_t hitches = 0, rt_frames = 0;
+  uint64_t draws_t = 0, draws_m = 0, verts_t = 0, verts_m = 0, mx_t = 0, mx_m = 0;
+  uint64_t cv_t = 0, cvb_t = 0, cv_m = 0, sub_t = 0, sub_m = 0, res_t = 0, res_m = 0;
+  uint64_t tx_t = 0, txb_t = 0, tx_m = 0, txb_m = 0;
+  {
+    PerfDiagState &p = PerfDiag();
+    std::lock_guard lock(p.mutex);
+    g.swap(p.game_ms);
+    r.swap(p.render_ms);
+    q.swap(p.gpu_ms);
+    hitches = p.hitches_over_35ms;
+    rt_frames = p.rt_frames;
+    draws_t = p.draws_total; draws_m = p.draws_max;
+    verts_t = p.verts_total; verts_m = p.verts_max;
+    mx_t = p.memexport_total; mx_m = p.memexport_max;
+    cv_t = p.converts_total; cvb_t = p.convert_bytes_total; cv_m = p.converts_max;
+    sub_t = p.submits_total; sub_m = p.submits_max;
+    res_t = p.resolves_total; res_m = p.resolves_max;
+    tx_t = p.tex_uploads_total; txb_t = p.tex_upload_bytes_total;
+    tx_m = p.tex_uploads_max; txb_m = p.tex_upload_bytes_max;
+    p.hitches_over_35ms = 0;
+    p.rt_frames = 0;
+    p.draws_total = p.draws_max = 0;
+    p.verts_total = p.verts_max = 0;
+    p.memexport_total = p.memexport_max = 0;
+    p.converts_total = p.convert_bytes_total = p.converts_max = 0;
+    p.submits_total = p.submits_max = 0;
+    p.resolves_total = p.resolves_max = 0;
+    p.tex_uploads_total = p.tex_upload_bytes_total = 0;
+    p.tex_uploads_max = p.tex_upload_bytes_max = 0;
+  }
+  const uint64_t pipelines = g_workload_pipelines_window.exchange(0, std::memory_order_relaxed);
+  const DistStats gd = ComputeDist(g);
+  const DistStats rd = ComputeDist(r);
+  const DistStats qd = ComputeDist(q);
+  REXLOG_INFO("[renut perf] window {:.1f} s | game({}): avg {:.2f} p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f} ms "
+              "(>33.3ms:{} >50ms:{} >100ms:{}) | render({}): avg {:.2f} p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f} ms "
+              "(>33.3ms:{}) | gpu({}): avg {:.2f} p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f} ms (>33.3ms:{}) | "
+              "hitches(>35ms): {}",
+              since, gd.count, gd.avg, gd.p50, gd.p95, gd.p99, gd.max, gd.over_33, gd.over_50, gd.over_100,
+              rd.count, rd.avg, rd.p50, rd.p95, rd.p99, rd.max, rd.over_33,
+              qd.count, qd.avg, qd.p50, qd.p95, qd.p99, qd.max, qd.over_33, hitches);
+  const double inv_f = rt_frames ? 1.0 / double(rt_frames) : 0.0;
+  constexpr double kMiB = double(1u << 20);
+  REXLOG_INFO("[renut workload] frames {} | draws/f avg {:.1f} max {} | verts/f avg {:.1f}k max {} | "
+              "memexport/f avg {:.1f} max {} | stream_cv/f avg {:.1f} ({:.2f} MB/f) max {} | "
+              "submits/f avg {:.1f} max {} | resolves/f avg {:.1f} max {} | "
+              "tex_up/f avg {:.1f} ({:.2f} MB/f, peak {:.2f} MB) | pipelines_built {}",
+              rt_frames, double(draws_t) * inv_f, draws_m,
+              (double(verts_t) * inv_f) / 1000.0, verts_m,
+              double(mx_t) * inv_f, mx_m,
+              double(cv_t) * inv_f, (double(cvb_t) * inv_f) / kMiB, cv_m,
+              double(sub_t) * inv_f, sub_m,
+              double(res_t) * inv_f, res_m,
+              double(tx_t) * inv_f, (double(txb_t) * inv_f) / kMiB, double(txb_m) / kMiB, pipelines);
+}
+
 
 }  // namespace
 
@@ -1396,6 +1532,7 @@ void StatsGameFrame() {
     REXLOG_INFO("[renut] {}", deko3d::Report());
 #endif
   REXLOG_INFO("[renut] {}", renut::frame_stats::WaitReport());  // blur-nx (2026-11-13, #37's census)
+  ReportDetailedPerfAndWorkload(since);
   {  // blur-nx (2026-11-13, #47's census; banjo_renut_lean_diagnostics' draws)
     const uint64_t draws = g_const_draws.exchange(0, std::memory_order_relaxed);
     const uint64_t regs = g_const_registers.exchange(0, std::memory_order_relaxed);
@@ -1585,7 +1722,90 @@ void StatsGameFrame() {
   g_stats.last_report = now;
 }
 
+WorkloadFrame g_workload_frame{};
+
+void NoteGameFrameTiming() {
+  const auto now = std::chrono::steady_clock::now();
+#if REX_PLATFORM_SWITCH
+  uint64_t now_tick = 0;
+  asm volatile("mrs %0, cntpct_el0" : "=r"(now_tick));
+#endif
+  PerfDiagState &p = PerfDiag();
+  double ms = 0.0;
+  uint64_t prev_tick = 0;
+  bool record = false;
+  {
+    std::lock_guard lock(p.mutex);
+    if (p.last_game_frame != std::chrono::steady_clock::time_point{}) {
+      ms = std::chrono::duration<double, std::milli>(now - p.last_game_frame).count();
+      if (ms > 0.0 && ms < 10000.0) {
+        if (p.game_ms.size() < 4096)
+          p.game_ms.push_back(ms);
+        record = ms > 35.0 && ms < 5000.0;
+        if (record)
+          ++p.hitches_over_35ms;
+      }
+    }
+    p.last_game_frame = now;
+    prev_tick = p.last_game_tick;
+#if REX_PLATFORM_SWITCH
+    p.last_game_tick = now_tick;
+#endif
+  }
+#if REX_PLATFORM_SWITCH
+  if (record && prev_tick && now_tick > prev_tick)
+    RexSwitchPerfHitch(prev_tick, now_tick);
+#else
+  (void)prev_tick;
+  (void)record;
+#endif
+}
+
 void StatsRenderThreadFrame(double busy_ms) {
+  const WorkloadFrame wf = g_workload_frame;
+  g_workload_frame = {};
+  const uint64_t pipe_f = g_workload_pipelines_frame.exchange(0, std::memory_order_relaxed);
+#if REX_PLATFORM_SWITCH
+  if (wf.draws)
+    RexSwitchPerfAdd(5, wf.draws);
+  if (wf.submits)
+    RexSwitchPerfAdd(7, wf.submits);
+  if (wf.resolves)
+    RexSwitchPerfAdd(9, wf.resolves);
+  if (wf.tex_uploads)
+    RexSwitchPerfAdd(14, wf.tex_uploads);
+  const uint64_t up_bytes = wf.tex_upload_bytes + wf.stream_convert_bytes;
+  if (up_bytes)
+    RexSwitchPerfAdd(15, up_bytes);
+  if (pipe_f)
+    RexSwitchPerfAdd(16, pipe_f);
+#else
+  (void)pipe_f;
+#endif
+  {
+    PerfDiagState &p = PerfDiag();
+    std::lock_guard lock(p.mutex);
+    if (p.render_ms.size() < 4096)
+      p.render_ms.push_back(busy_ms);
+    ++p.rt_frames;
+    p.draws_total += wf.draws;
+    if (wf.draws > p.draws_max) p.draws_max = wf.draws;
+    p.verts_total += wf.vertices;
+    if (wf.vertices > p.verts_max) p.verts_max = wf.vertices;
+    p.memexport_total += wf.memexport_draws;
+    if (wf.memexport_draws > p.memexport_max) p.memexport_max = wf.memexport_draws;
+    p.converts_total += wf.stream_converts;
+    p.convert_bytes_total += wf.stream_convert_bytes;
+    if (wf.stream_converts > p.converts_max) p.converts_max = wf.stream_converts;
+    p.submits_total += wf.submits;
+    if (wf.submits > p.submits_max) p.submits_max = wf.submits;
+    p.resolves_total += wf.resolves;
+    if (wf.resolves > p.resolves_max) p.resolves_max = wf.resolves;
+    p.tex_uploads_total += wf.tex_uploads;
+    p.tex_upload_bytes_total += wf.tex_upload_bytes;
+    if (wf.tex_uploads > p.tex_uploads_max) p.tex_uploads_max = wf.tex_uploads;
+    if (wf.tex_upload_bytes > p.tex_upload_bytes_max) p.tex_upload_bytes_max = wf.tex_upload_bytes;
+  }
   ControlNvkLocked();  // banjo_gpu_nvk_draw_contract (the Switch): requests and guards, once a frame
   int half, target;
   bool apply;
@@ -1611,6 +1831,12 @@ void StatsRenderThreadFrame(double busy_ms) {
 }
 
 void StatsGpuFrame(double ms) {
+  {
+    PerfDiagState &p = PerfDiag();
+    std::lock_guard lock(p.mutex);
+    if (p.gpu_ms.size() < 4096)
+      p.gpu_ms.push_back(ms);
+  }
   std::lock_guard lock(g_stats.mutex);
   ++g_stats.total.gpu_frames;
   g_stats.total.gpu_ms += ms;
@@ -1760,6 +1986,7 @@ void CountDrawSource(int source, uint64_t draws) {
 
 void CountDrawnResolve() {
   Bump(g_resolves_drawn, 1);
+  NoteWorkloadResolve();
 }
 void CountSmaa() {
   Bump(g_smaa_runs, 1);

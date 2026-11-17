@@ -1,119 +1,205 @@
-# katamari-nx: the localized native copies (tools/localize_native.py --list; banjo-nx's method, docs/enhancements.md
-# "Localized copies"). Written 2026-10-30 from the PC sampling profile of title, menus, intro and first gameplay
-# (out/pc_runs/renut4/pc_profile.log, all seven 60-s windows; shares are of every busy sample of every thread).
-# A line is "<address> [options] <what>". The first five carry the hand-written natives (hand.txt): their hooks.
-82759C98 4x4 matrix copy (hand-written native; PC rank 1, 5.2 % of busy samples in gameplay)
-827598C0 4x4 matrix multiply in place (hand-written native; rank 2)
-82759780 4x4 matrix multiply, three operands (hand-written native; rank 11)
-82759D20 translation matrix (hand-written native; rank 20)
-827E7A40 C runtime memset (hand-written native, banjo-nx's)
-827E73A8 C runtime word copy (hand-written native, 2026-10-30 evening)
-8266AF60 string hash (hand-written native, 2026-10-30 evening; ARM 187 samples)
-827596B0 4x4 matrix product, three operands (hand-written native, 2026-10-31)
-82316A78 sphere test against a box (job threads, 1.3 % of the console's guest samples) (hand-written native, 2026-10-31)
-8275A828 N vectors turned by a 3x3 matrix (hand-written native, 2026-10-31)
-8276E3D8 integration step of N bodies (positions, rotations normalised) (hand-written native, 2026-10-31)
-824E97F0 sine (range reduction and polynomial) (hand-written native, 2026-10-31)
-# The top 100 others of the profile (machine-optimised: localized copies, small callees inlined, direct dispatch).
-# Left out (the copy tool refuses them: an atomic compare-and-swap, state shared with other threads): 826A13D8,
-# 82210630, 826E9E38; the next ones of the profile take their places.
-82265C08 Main XThread: PC 1.61 % of busy samples (7949 samples, windows 1-7); rank 3
-827A5B00 Main XThread: PC 1.53 % of busy samples (7557 samples, windows 1-7); rank 4
-82536F90 XThread50B8: PC 1.24 % of busy samples (6120 samples, windows 1-7); rank 5
-82656DF8 XThread4B10: PC 0.93 % of busy samples (4603 samples, windows 1-7); rank 6
-82277E70 Main XThread: PC 0.80 % of busy samples (3931 samples, windows 1-7); rank 7
-822683D0 Main XThread: PC 0.68 % of busy samples (3367 samples, windows 1-7); rank 8
-82738260 XThread4B10: PC 0.66 % of busy samples (3273 samples, windows 1-7); rank 9
-822772C0 Main XThread: PC 0.62 % of busy samples (3070 samples, windows 1-7); rank 10
-824BFE50 Main XThread: PC 0.60 % of busy samples (2968 samples, windows 1-7); rank 12
-82678260 XThread4B10: PC 0.50 % of busy samples (2468 samples, windows 1-7); rank 13
-82672410 XThread4B10: PC 0.46 % of busy samples (2288 samples, windows 1-7); rank 14
-8227A280 Main XThread: PC 0.46 % of busy samples (2275 samples, windows 1-7); rank 15
-8276C9E8 Main XThread: PC 0.44 % of busy samples (2176 samples, windows 1-7); rank 16
-82659D00 XThread4B10: PC 0.43 % of busy samples (2141 samples, windows 1-7); rank 17
-82539960 XThread50B8: PC 0.43 % of busy samples (2097 samples, windows 1-7); rank 18
-8279F0B0 Main XThread: PC 0.38 % of busy samples (1896 samples, windows 1-7); rank 19
-8221F640 Main XThread: PC 0.38 % of busy samples (1865 samples, windows 1-7); rank 21
-827E6F50 Main XThread: PC 0.34 % of busy samples (1671 samples, windows 1-7); rank 23
-827877C0 Main XThread: PC 0.34 % of busy samples (1654 samples, windows 1-7); rank 24
-822652E8 Main XThread: PC 0.33 % of busy samples (1616 samples, windows 1-7); rank 25
-8278B2B8 Main XThread: PC 0.32 % of busy samples (1595 samples, windows 1-7); rank 26
-822470D0 Main XThread: PC 0.31 % of busy samples (1511 samples, windows 1-7); rank 27
-82220388 Main XThread: PC 0.31 % of busy samples (1506 samples, windows 1-7); rank 28
-8223A970 Main XThread: PC 0.30 % of busy samples (1457 samples, windows 1-7); rank 29
-82541A50 XThread50B8: PC 0.29 % of busy samples (1440 samples, windows 1-7); rank 30
-82746D50 XThread4B10: PC 0.29 % of busy samples (1440 samples, windows 1-7); rank 31
-8271FD20 XThread4B10: PC 0.28 % of busy samples (1387 samples, windows 1-7); rank 32
-82746B70 XThread4B10: PC 0.28 % of busy samples (1365 samples, windows 1-7); rank 33
-82689A40 XThread4B10: PC 0.25 % of busy samples (1209 samples, windows 1-7); rank 34
-82787298 Main XThread: PC 0.23 % of busy samples (1139 samples, windows 1-7); rank 35
-8271F358 XThread4B10: PC 0.23 % of busy samples (1137 samples, windows 1-7); rank 36
-822814D0 Main XThread: PC 0.22 % of busy samples (1071 samples, windows 1-7); rank 37
-82539A88 XThread50B8: PC 0.22 % of busy samples (1068 samples, windows 1-7); rank 38
-8271FAD0 XThread4B10: PC 0.20 % of busy samples (978 samples, windows 1-7); rank 39
-824D42A0 XThread4B10: PC 0.20 % of busy samples (974 samples, windows 1-7); rank 40
-822889D8 Main XThread: PC 0.15 % of busy samples (739 samples, windows 1-7); rank 41
-8274F128 XThread4B10: PC 0.15 % of busy samples (736 samples, windows 1-7); rank 42
-8270FE40 XThread4B10: PC 0.14 % of busy samples (693 samples, windows 1-7); rank 43
-82536478 XThread50B8: PC 0.13 % of busy samples (643 samples, windows 1-7); rank 44
-82536110 XThread50B8: PC 0.12 % of busy samples (593 samples, windows 1-7); rank 45
-826583E8 XThread4B10: PC 0.12 % of busy samples (582 samples, windows 1-7); rank 46
-82536990 XThread50B8: PC 0.10 % of busy samples (512 samples, windows 1-7); rank 47
-8253FC20 XThread50B8: PC 0.10 % of busy samples (471 samples, windows 1-7); rank 48
-82759A00 XThread4B10: PC 0.09 % of busy samples (445 samples, windows 1-7); rank 49
-827E8940 XThread4B10: PC 0.08 % of busy samples (386 samples, windows 1-7); rank 51
-825366B8 XThread50B8: PC 0.08 % of busy samples (381 samples, windows 1-7); rank 52
-8278B190 Main XThread: PC 0.08 % of busy samples (380 samples, windows 1-7); rank 53
-82497C98 Main XThread: PC 0.07 % of busy samples (369 samples, windows 1-7); rank 54
-82536A38 XThread50B8: PC 0.07 % of busy samples (366 samples, windows 1-7); rank 55
-82266060 Main XThread: PC 0.07 % of busy samples (366 samples, windows 1-7); rank 56
-8254B9A8 XThread50B8: PC 0.07 % of busy samples (340 samples, windows 1-7); rank 57
-8266D8A0 XThread6E8C: PC 0.07 % of busy samples (340 samples, windows 1-7); rank 58
-824B9970 Main XThread: PC 0.07 % of busy samples (325 samples, windows 1-7); rank 59
-82535930 XThread50B8: PC 0.06 % of busy samples (279 samples, windows 1-7); rank 60
-8271F9C0 XThread4B10: PC 0.06 % of busy samples (273 samples, windows 1-7); rank 61
-829EB4C0 XThread33AC: PC 0.05 % of busy samples (237 samples, windows 1-7); rank 62
-82535FE0 XThread50B8: PC 0.05 % of busy samples (226 samples, windows 1-7); rank 63
-825471D0 XThread50B8: PC 0.05 % of busy samples (223 samples, windows 1-7); rank 64
-8252E9F8 XThread50B8: PC 0.04 % of busy samples (206 samples, windows 1-7); rank 65
-824BAAE0 Main XThread: PC 0.04 % of busy samples (203 samples, windows 1-7); rank 66
-825361E0 XThread50B8: PC 0.04 % of busy samples (195 samples, windows 1-7); rank 67
-8275AA88 Main XThread: PC 0.04 % of busy samples (194 samples, windows 1-7); rank 68
-82536548 XThread50B8: PC 0.04 % of busy samples (193 samples, windows 1-7); rank 69
-829DBC18 XThread33AC: PC 0.04 % of busy samples (187 samples, windows 1-7); rank 70
-82536828 XThread50B8: PC 0.04 % of busy samples (184 samples, windows 1-7); rank 71
-8275A198 Main XThread: PC 0.04 % of busy samples (184 samples, windows 1-7); rank 72
-8249C780 Main XThread: PC 0.03 % of busy samples (168 samples, windows 1-7); rank 73
-8253EB88 XThread50B8: PC 0.03 % of busy samples (156 samples, windows 1-7); rank 74
-82493C20 XThread4B10: PC 0.03 % of busy samples (129 samples, windows 1-7); rank 75
-8271C5E8 Main XThread: PC 0.02 % of busy samples (121 samples, windows 1-7); rank 76
-827DDEB0 Main XThread: PC 0.02 % of busy samples (118 samples, windows 1-7); rank 77
-82534AB0 XThread50B8: PC 0.02 % of busy samples (109 samples, windows 1-7); rank 79
-829EE070 XThread33AC: PC 0.02 % of busy samples (98 samples, windows 1-7); rank 80
-829F2E10 XThread33AC: PC 0.02 % of busy samples (89 samples, windows 1-7); rank 81
-8275FC38 Main XThread: PC 0.02 % of busy samples (88 samples, windows 1-7); rank 82
-82610428 XThread33AC: PC 0.02 % of busy samples (87 samples, windows 1-7); rank 83
-8226B978 Main XThread: PC 0.02 % of busy samples (85 samples, windows 1-7); rank 84
-82212938 Main XThread: PC 0.02 % of busy samples (83 samples, windows 1-7); rank 85
-827E8D20 XThread4B10: PC 0.02 % of busy samples (80 samples, windows 1-7); rank 86
-82628F00 XThread6AB8: PC 0.02 % of busy samples (75 samples, windows 1-7); rank 87
-82497E30 Main XThread: PC 0.01 % of busy samples (73 samples, windows 1-7); rank 88
-82534150 XThread50B8: PC 0.01 % of busy samples (72 samples, windows 1-7); rank 89
-8272FDD0 XThread4B10: PC 0.01 % of busy samples (68 samples, windows 1-7); rank 90
-827595D0 Main XThread: PC 0.01 % of busy samples (67 samples, windows 1-7); rank 91
-829E05B8 XThread33AC: PC 0.01 % of busy samples (63 samples, windows 1-7); rank 92
-82541CE0 XThread50B8: PC 0.01 % of busy samples (63 samples, windows 1-7); rank 93
-824AC010 Main XThread: PC 0.01 % of busy samples (60 samples, windows 1-7); rank 94
-824B9570 Main XThread: PC 0.01 % of busy samples (57 samples, windows 1-7); rank 95
-829F2ED0 XThread33AC: PC 0.01 % of busy samples (51 samples, windows 1-7); rank 96
-824B97F0 Main XThread: PC 0.01 % of busy samples (49 samples, windows 1-7); rank 97
-8271F470 XThread4B10: PC 0.01 % of busy samples (47 samples, windows 1-7); rank 98
-824ABF90 Main XThread: PC 0.01 % of busy samples (47 samples, windows 1-7); rank 99
-82294B28 Main XThread: PC 0.01 % of busy samples (46 samples, windows 1-7); rank 100
-824AC748 Main XThread: PC 0.01 % of busy samples (45 samples, windows 1-7); rank 101
-824BC2F8 Main XThread: PC 0.01 % of busy samples (45 samples, windows 1-7); rank 102
-824B6D48 Main XThread: PC 0.01 % of busy samples (44 samples, windows 1-7); rank 103
-82627520 XThread33AC: PC 0.01 % of busy samples (41 samples, windows 1-7); rank 104
-829EC658 XThread33AC: PC 0.01 % of busy samples (34 samples, windows 1-7); rank 105
-825410A0 XThread50B8: PC 0.01 % of busy samples (34 samples, windows 1-7); rank 106
-829ECA00 XThread33AC: PC 0.01 % of busy samples (29 samples, windows 1-7); rank 108
+# Deadpool: Guest functions replaced by localized copies (tools/localize_native.py).
+823B0870 Hot guest function
+823CC988 Hot guest function
+823E55A0 Hot guest function
+823E6630 Hot guest function
+823EB338 Hot guest function
+823F9E40 Hot guest function
+823FD048 Hot guest function
+823FEA20 Hot guest function
+82411038 Hot guest function
+82417418 Hot guest function
+82417890 Hot guest function
+82436D40 Hot guest function
+82442990 Hot guest function
+8244CE70 Hot guest function
+8244F340 Hot guest function
+8244F4B0 Hot guest function
+8245D4D8 Hot guest function
+82474EF8 Hot guest function
+8249A1B0 Hot guest function
+824A4938 Hot guest function
+824B4BB0 Hot guest function
+824B85D8 Hot guest function
+824B87F8 Hot guest function
+824F6750 Hot guest function
+8250CBA8 Hot guest function
+82575C10 Hot guest function
+82577100 Hot guest function
+8257EB70 Hot guest function
+8257F530 Hot guest function
+82588A90 Hot guest function
+8258ABE0 Hot guest function
+8258B310 Hot guest function
+8258C4F8 Hot guest function
+8258C9A8 Hot guest function
+8259ADC8 Hot guest function
+8259D7A8 Hot guest function
+8259DB70 Hot guest function
+8259EE08 Hot guest function
+825A4AA0 Hot guest function
+825B5710 Hot guest function
+825D2070 Hot guest function
+8261DBA8 Hot guest function
+82630698 Hot guest function
+82632178 Hot guest function
+8264DFC8 Hot guest function
+82657A88 Hot guest function
+82657D58 Hot guest function
+82658048 Hot guest function
+826581C0 Hot guest function
+8265B2F0 Hot guest function
+8265B730 Hot guest function
+826878B0 Hot guest function
+82688378 Hot guest function
+8268F0D0 Hot guest function
+8269D4E0 Hot guest function
+826A1748 Hot guest function
+826A3CC0 Hot guest function
+826A9EE8 Hot guest function
+826ACE40 Hot guest function
+826ADF08 Hot guest function
+826B0558 Hot guest function
+826B2A58 Hot guest function
+826B6110 Hot guest function
+826B7768 Hot guest function
+826B8518 Hot guest function
+826B8758 Hot guest function
+826B8808 Hot guest function
+826C04C0 Hot guest function
+82719B08 Hot guest function
+82733118 Hot guest function
+82734578 Hot guest function
+8273DAE8 Hot guest function
+827430D0 Hot guest function
+82780178 Hot guest function
+827B3B68 Hot guest function
+827B53E0 Hot guest function
+827B8BD8 Hot guest function
+827C3640 Hot guest function
+827C64F8 Hot guest function
+827E2088 Hot guest function
+8294AF58 Hot guest function
+8294B778 Hot guest function
+8294C190 Hot guest function
+82976250 Hot guest function
+8297A610 Hot guest function
+829AB6E0 Hot guest function
+829AB888 Hot guest function
+829ABD70 Hot guest function
+829AD330 Hot guest function
+829ADBC0 Hot guest function
+829ADE40 Hot guest function
+829B6E60 Hot guest function
+829F2C38 Hot guest function
+829F2CB8 Hot guest function
+829F3580 Hot guest function
+829F3D70 Hot guest function
+829F4110 Hot guest function
+829F4738 Hot guest function
+82CDECC0 Hot guest function
+82CF7DD8 Hot guest function
+82D18500 Hot guest function
+82D22F70 Hot guest function
+82D242C8 Hot guest function
+82D250A8 Hot guest function
+82D27B98 Hot guest function
+82D2F0E8 Hot guest function
+82D34988 Hot guest function
+82D34F18 Hot guest function
+82D36640 Hot guest function
+82D36C80 Hot guest function
+82D39CC0 Hot guest function
+82D3ACA8 Hot guest function
+82D3B1F8 Hot guest function
+82D3D940 Hot guest function
+82D3F820 Hot guest function
+82D417A0 Hot guest function
+82D46038 Hot guest function
+82D46F50 Hot guest function
+82D50058 Hot guest function
+82D53C18 Hot guest function
+82D54898 Hot guest function
+82D54A58 Hot guest function
+82D54C60 Hot guest function
+82D56C08 Hot guest function
+82D57878 Hot guest function
+82D59AD0 Hot guest function
+82D5DE68 Hot guest function
+82D5F7A8 Hot guest function
+82D60CB8 Hot guest function
+82D6AF08 Hot guest function
+82D6BF90 Hot guest function
+82D71908 Hot guest function
+82D71990 Hot guest function
+82D71E58 Hot guest function
+82D75100 Hot guest function
+82D75628 Hot guest function
+82D7C570 Hot guest function
+82D7C894 Hot guest function
+82D7D0F0 Hot guest function
+82D7D610 Hot guest function
+82D8F518 Hot guest function
+82D8FC80 Hot guest function
+82D901D0 Hot guest function
+82D90878 Hot guest function
+82D963E0 Hot guest function
+82D964A8 Hot guest function
+82D97CE8 Hot guest function
+82D9ABE0 Hot guest function
+82D9C6A8 Hot guest function
+82D9C780 Hot guest function
+82D9CA50 Hot guest function
+82D9CC58 Hot guest function
+82E68BB8 Hot guest function
+82F542B8 Hot guest function
+82F82A18 Hot guest function
+82F88B18 Hot guest function
+82F88DF0 Hot guest function
+82F8A050 Hot guest function
+82FD00F0 Hot guest function
+82FD3078 Hot guest function
+8300F7F0 Hot guest function
+8301B7D8 Hot guest function
+830341F8 Hot guest function
+8303C808 Hot guest function
+83063668 Hot guest function
+830D9DB8 Hot guest function
+830FD880 Hot guest function
+830FD910 Hot guest function
+83102580 Hot guest function
+8311E7D0 Hot guest function
+831228E8 Hot guest function
+83149D10 Hot guest function
+83149EC0 Hot guest function
+8314A2F0 Hot guest function
+8314A738 Hot guest function
+8314AA00 Hot guest function
+8314AE78 Hot guest function
+831B2210 Hot guest function
+831D38F8 Hot guest function
+831ECF18 Hot guest function
+8322DB50 Hot guest function
+8322ED80 Hot guest function
+8323EFE0 Hot guest function
+8329CEB0 Hot guest function
+832BE678 Hot guest function
+832BFB18 Hot guest function
+832F82C0 Hot guest function
+8330DA78 Hot guest function
+83310748 Hot guest function
+83318B88 Hot guest function
+8331D5A8 Hot guest function
+83327940 Hot guest function
+8332ACF0 Hot guest function
+8332BF18 Hot guest function
+8332CDF8 Hot guest function
+8332D9E8 Hot guest function
+833414E0 Hot guest function
+83343420 Hot guest function
+83362030 Hot guest function
+8336AA70 Hot guest function
+8336D1F0 Hot guest function
+834F1FE8 Hot guest function
+834F2600 Hot guest function
+83507880 Hot guest function

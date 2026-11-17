@@ -50,6 +50,32 @@ def CodeOnly(text):
     return re.sub(r'__imp__sub_[0-9A-Fa-f]{8}', ' ', text)
 
 
+def _skip_legacy_source(path):
+    norm = path.replace('\\', '/')
+    skip_dirs = ('/app/src/me/', '/app/src/native/')
+    if any(d in norm for d in skip_dirs):
+        return True
+    skip_files = (
+        '/app/src/cpu/banjo_hot_guest.cpp', '/app/src/cpu/banjo_hot_guest.h',
+        '/app/src/cpu/hot/banjo_hand_natives.h', '/app/src/cpu/katamari_stage_diag.cpp',
+        '/app/src/cpu/banjo_pool_lock.cpp', '/app/src/cpu/banjo_reverb_native.cpp',
+        '/app/src/cpu/banjo_xaudio_native.cpp', '/app/src/cpu/banjo_forms_selfcheck.cpp',
+        '/app/src/cpu/blur_microbench.cpp',
+        '/app/src/renut_engine/gpu/banjo_shared_hooks.h',
+        '/app/src/renut_engine/gpu/d3d/hooks/state.cpp',
+        '/app/src/renut_engine/gpu/guest/widescreen.cpp',
+        '/app/src/renut_engine/gpu/guest/widescreen.h',
+        '/app/src/renut_engine/gpu/guest/photo_capture.cpp',
+        '/app/src/renut_engine/StopNSwap.cpp', '/app/src/renut_engine/cvar_menu.cpp',
+        '/app/src/renut_engine/env_map_pool.cpp', '/app/src/renut_engine/frameHooks.cpp',
+        '/app/src/renut_engine/frontend_debug_menu.cpp', '/app/src/renut_engine/hooks.cpp',
+        '/app/src/renut_engine/mnk_controls.cpp', '/app/src/renut_engine/mnk_controls.h',
+        '/app/src/renut_engine/shader_dump.cpp', '/app/src/renut_engine/sleep.h',
+        '/app/src/renut_engine/thread_slots.cpp', '/app/src/renut_engine/townsfolk.cpp',
+    )
+    return any(norm.endswith(f) for f in skip_files)
+
+
 def hooked():
     names = set()
     for root in SOURCES:
@@ -57,7 +83,8 @@ def hooked():
             paths = [root]
         else:
             paths = [os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs
-                     if not f.endswith(('.a', '.obj', '.o', '.png', '.jpg', '.bin', '_all.inc', '_all.inc'))]
+                     if not f.endswith(('.a', '.obj', '.o', '.png', '.jpg', '.bin', '_all.inc'))
+                     and not _skip_legacy_source(os.path.join(d, f))]
         for path in paths:
             try:
                 text = open(path, encoding='utf-8', errors='ignore').read()
@@ -65,6 +92,8 @@ def hooked():
                 continue
             if path.endswith(CODE_SUFFIXES):
                 text = CodeOnly(text)
+                # Only real Deadpool/SDK hook macros declare hooks in C/C++ sources.
+                text = '\n'.join(re.findall(r'(?:DEADPOOL_RENUT_HOOK|PPC_HOOK|REX_HOOK)(?:_RAW)?\s*\([^)]*\)', text))
             elif path.endswith('.toml') or os.path.basename(path) == 'CMakeLists.txt':
                 # banjo-nx (2026-10-19, CPU proposal 7): a # comment names addresses for the reader, not hooks.
                 # renut_config.toml's comment on the scalar/vector alternators kept 99 calls to 24 functions on the
@@ -73,7 +102,7 @@ def hooked():
             if os.path.basename(path) == 'renut_config.toml':
                 # non_argument_as_local's keep list names functions that keep r11/r12 in ctx, not hooks
                 text = re.sub(r'non_argument_as_local_keep\s*=\s*\[.*?\]', ' ', text, flags=re.S)
-            for m in re.findall(r'(?<![0-9A-Fa-f])(82[0-9A-Fa-f]{6})(?![0-9A-Fa-f])', text):
+            for m in re.findall(r'(?<![0-9A-Fa-f])(8[23][0-9A-Fa-f]{6})(?![0-9A-Fa-f])', text):
                 names.add('sub_' + m.upper())
     return names
 

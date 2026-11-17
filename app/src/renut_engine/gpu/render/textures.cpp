@@ -2,6 +2,7 @@
  * @file    gpu/render/textures.cpp
  */
 #include "renut_engine/gpu/render/textures.h"
+#include "renut_engine/gpu/render/counter_prompt_a.h"
 
 #include <algorithm>
 #include <bit>
@@ -160,6 +161,11 @@ bool AllSigned(const TextureFetch &fetch) {
       return false;
   }
   return true;
+}
+
+bool IsGamma(const TextureFetch &fetch) {
+  return fetch.Sign(0) == TextureSign::Gamma ||
+         fetch.Sign(1) == TextureSign::Gamma;
 }
 
 plume::RenderSwizzle ViewSwizzle(uint32_t component) {
@@ -410,6 +416,18 @@ void ReadLevel(const TextureFormatInfo &info, const TextureFetch &fetch, const L
         ConvertTexels(info.conversion, row.data(), out, blocks_w);
     }
   }
+  if (blocks_w == 32 && blocks_h == 32 && depth == 1 && info.conversion == TexelConversion::Copy &&
+      hbpb == 16 && dst_row_pitch == 512) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < 16384; ++i) {
+      h = (h ^ dst[i]) * 0x100000001b3ull;
+    }
+    if (h == banjo::renut_gpu::kCounterGraphicHash) {
+      std::memcpy(dst, banjo::renut_gpu::kCounterGraphicA, 16384);
+    } else if (h == banjo::renut_gpu::kKillCounterGraphicHash) {
+      std::memcpy(dst, banjo::renut_gpu::kKillCounterGraphicA, 16384);
+    }
+  }
 }
 
 // Staging data read from guest memory at submission rather than at the draw,
@@ -474,6 +492,7 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
   // layer (StackedLayers) repeats its last one.
   const uint32_t slices = is_3d_data ? 1 : t.stacked ? StackedLayers(t) : t.depth;
   const uint32_t bs = t.info.block_size;
+  uint64_t total_upload_bytes = 0;
   for (uint32_t level = 0; level < t.mip_levels; ++level) {
     const uint32_t w = std::max(1u, t.width >> level);
     const uint32_t h = std::max(1u, t.height >> level);
@@ -507,6 +526,7 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
       UploadAllocation staging = s.uploads[s.frame].Allocate(uint64_t(slice_pitch) * d, 512);
       if (!staging)
         return false;
+      total_upload_bytes += uint64_t(slice_pitch) * d;
       auto *dst = static_cast<uint8_t *>(staging.cpu);
       if (defer_read)
         g_pending_fills.push_back({t.info, fetch, src, blocks_w, blocks_h, d, dst, row_pitch, slice_pitch});
@@ -568,6 +588,7 @@ bool Upload(HostTexture &t, const TextureFetch &fetch, bool defer_read) {
     if (!was_zero)
       ++g_zero_marked;
   }
+  banjo::renut_gpu::NoteWorkloadTexUpload(total_upload_bytes);
   return true;
 }
 
@@ -593,7 +614,7 @@ bool Create(HostTexture &t, const TextureFetch &fetch, bool render_target,
   fetch.Size(width, height, depth);
   t.dimension = HostDimension(fetch);
   t.guest_format = fetch.Format();
-  t.info = GetTextureFormatInfo(fetch.Format(), AllSigned(fetch));
+  t.info = GetTextureFormatInfo(fetch.Format(), AllSigned(fetch), IsGamma(fetch));
   // sasrt-nx (2026-11-11, port 75; its formats batch, the diagnostic: renut_diag_formats): the first texture of each
   // guest format / host format.
   if (banjo::renut_gpu::DiagFormatsOn()) {
@@ -1005,6 +1026,7 @@ HostTexture *ResolveTarget(u32 texture_va, plume::RenderFormat format, RenderSca
   slot->gpu_written = true;
   slot->uploaded = true;
   slot->used_frame = g_frame;
+  slot->resolved_frame = g_frame;
   HostTexture *&entry = g_resolve_targets[fetch.BasePage()];
   if (entry != slot.get()) {
     entry = slot.get();

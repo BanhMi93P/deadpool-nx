@@ -10,8 +10,8 @@
 # The shader containers its shader cache is built from: Renut's own dump of default.xex and the bundles
 # (tools/dump_shaders.py of a Renut checkout; banjo-nx's harvest has wrapped containers Renut's XenosRecomp does not
 # take). A normal variable, so it shadows gpu.cmake's cache entry.
-set(RENUT_SHADER_DUMP_DIR "${CMAKE_SOURCE_DIR}/../out/renut_shader_dump")
-set(RENUT_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets" CACHE PATH "Game assets (default.xex and Bundle/)")
+set(RENUT_SHADER_DUMP_DIR "${CMAKE_SOURCE_DIR}/../shaders/raw")
+set(RENUT_ASSETS_DIR "${CMAKE_SOURCE_DIR}/../game" CACHE PATH "Game assets (default.xex)")
 
 # Renut's XenosRecomp is built as an ExternalProject (gpu.cmake): it gets this build's whole host toolchain, not only
 # the compiler paths (tools/renut_gpu_import.py adds the variable to gpu.cmake). On the PC, clang for the MSVC ABI.
@@ -146,7 +146,7 @@ target_link_libraries(renut PRIVATE banjo_renut_gpu)
 target_compile_definitions(renut PRIVATE BANJO_RENUT_RENDERER=1)
 # katamari-nx (2026-10-30): Renut's hooks at Beautiful Katamari's functions (tools/renut_hook_remap_katamari.py,
 # docs/katamari-notes.md) are registered in this build; OFF compiles them unregistered (banjo_renut_select.h).
-option(KATAMARI_RENUT_HOOKS "Register Renut's hooks at Beautiful Katamari's functions" ON)
+option(KATAMARI_RENUT_HOOKS "Register Renut's hooks at Beautiful Katamari's functions" OFF)
 if(KATAMARI_RENUT_HOOKS)
     target_compile_definitions(banjo_renut_gpu PRIVATE KATAMARI_RENUT_HOOKS=1)
     target_compile_definitions(renut PRIVATE KATAMARI_RENUT_HOOKS=1)

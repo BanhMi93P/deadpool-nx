@@ -987,10 +987,14 @@ static void xeKfLowerIrql(PPCContext* ctx, unsigned char new_irql) {
 // Guest-memory spinlock helpers - store PCR address as owner (matching xenia).
 // PPCContext* provides r13 (PCR address) without needing XThread::GetCurrentThread().
 uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_irql) {
-  uint32_t old_irql = change_irql ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
-  uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
+  const bool is_current_guest_ctx =
+      (ctx && runtime::ThreadState::Get() && runtime::current_ppc_context() == ctx);
+  uint32_t old_irql = (change_irql && is_current_guest_ctx) ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
+  uint32_t pcr_addr = is_current_guest_ctx ? static_cast<uint32_t>(ctx->r13.u64) : 0xFFFFFFFFu;
   const uint32_t self = rex::byte_swap(pcr_addr);
-  assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
+  if (is_current_guest_ctx) {
+    assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
+  }
   while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
     rex::thread::MaybeYield();
   }
@@ -999,9 +1003,13 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_i
 
 void xeKeKfReleaseSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, uint32_t old_irql,
                            bool change_irql) {
-  assert_true(lock->prcb_of_owner == static_cast<uint32_t>(ctx->r13.u64));
+  const bool is_current_guest_ctx =
+      (ctx && runtime::ThreadState::Get() && runtime::current_ppc_context() == ctx);
+  if (is_current_guest_ctx) {
+    assert_true(lock->prcb_of_owner == static_cast<uint32_t>(ctx->r13.u64));
+  }
   rex::thread::atomic_store_release(0u, &lock->prcb_of_owner.value);
-  if (change_irql && old_irql < IRQL_DISPATCH) {
+  if (change_irql && is_current_guest_ctx && old_irql < IRQL_DISPATCH) {
     xeKfLowerIrql(ctx, static_cast<unsigned char>(old_irql));
   }
 }

@@ -186,7 +186,7 @@ struct TextureFormatInfo {
 
 // 'is_signed' picks the SNORM host format where one exists (all components
 // signed in the fetch constant).
-TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed);
+TextureFormatInfo GetTextureFormatInfo(GpuTextureFormat format, bool is_signed, bool is_gamma = false);
 
 // Converts 'count' guest blocks (already byte-swapped per the fetch endian)
 // into host blocks.

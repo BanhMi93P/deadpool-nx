@@ -37,7 +37,7 @@
 // made for, the bottom button (B on Switch controllers) acts as A, the right one (A) as B, the left one (Y) as X and
 // the top one (X) as Y. false = by letter (the Switch's A acts as A), as in other Switch games. It applies at once;
 // the settings menu reads it too (window_switch.cpp). input_p1_* ... input_p4_* below override single buttons.
-REXCVAR_DEFINE_BOOL(input_xbox_layout, true, "Input",
+REXCVAR_DEFINE_BOOL(input_xbox_layout, false, "Input",
                     "Face buttons by position, as on an Xbox 360 pad (the bottom button, B, acts as A). "
                     "false = by letter: the Switch's A acts as A");
 

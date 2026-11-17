@@ -64,10 +64,18 @@ namespace {
 
 }  // namespace
 
+extern bool VerifyDeviceIntegrityAndPlayBootSplash();
+extern "C" void RexSwitchSanitizeThreadTls(void);
+
 int main(int argc, char* argv[]) {
+  RexSwitchSanitizeThreadTls();
   auto remaining = rex::cvar::Init(argc, argv);
   rex::cvar::ApplyEnvironment();
   rex::InitLoggingEarly();
+  if (!VerifyDeviceIntegrityAndPlayBootSplash()) {
+    REXLOG_ERROR("Hardware security integrity check failed");
+    ExitProcess(EXIT_FAILURE);
+  }
   // banjo-nx (2026-10-27): the system core (NetherSX2_nx's 4-core mode; core/threading_switch.h), once the cvars are
   // read and before any thread of ours starts; the main thread leaves it.
   {

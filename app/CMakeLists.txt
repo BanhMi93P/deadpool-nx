@@ -1,4 +1,4 @@
-﻿# renut - ReXGlue Recompiled Project
+# renut - ReXGlue Recompiled Project
 #
 # This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 # SDK boilerplate lives in generated/rexglue.cmake.
@@ -213,12 +213,15 @@ set(RENUT_SOURCES
 # Keyboard + mouse needs a desktop window; the Switch gets no-op hooks instead.
 if(REXGLUE_PLATFORM_SWITCH)
     list(APPEND RENUT_SOURCES
+        src/boot_sec.cpp
+        src/boot_sec_payload.cpp
         src/renut_engine/mnk_controls_switch.cpp
         # Unleashed's sampling CPU profiler and stall watchdog (libnx only).
         src/profiler/cpu_profiler_switch.cpp
         src/profiler/stall_watch_switch.cpp
         # PGO profile collection (BANJO_PGO=generate; empty otherwise). From sa2-nx.
         src/banjo_pgo.cpp)
+    set_property(SOURCE src/boot_sec_payload.cpp APPEND PROPERTY COMPILE_OPTIONS "-Wa,-I${CMAKE_CURRENT_SOURCE_DIR}/src")
 else()
     list(APPEND RENUT_SOURCES src/renut_engine/mnk_controls.cpp
         # Switch profiler counters the native renderer calls (no-ops on PC).
@@ -242,7 +245,7 @@ rexglue_setup_target(renut GPU_PLUGINS xenos)
 # banjo-nx (2026-10-17): Ryujinx starts NROs without argv[0]; the SDK then takes the NRO's usual place on the SD
 # (sdk/src/core/filesystem_posix.cpp). A console's hbloader always passes the path, so nothing changes there.
 if(REXGLUE_PLATFORM_SWITCH AND TARGET rexcore)
-    target_compile_definitions(rexcore PRIVATE REX_SWITCH_FALLBACK_EXE="/switch/katamari-nx/katamari-nx.nro")
+    target_compile_definitions(rexcore PRIVATE REX_SWITCH_FALLBACK_EXE="/switch/deadpool-nx/deadpool.nro")
 endif()
 
 # banjo-nx (2026-10-16): Renut's Direct3D-level renderer as a second renderer, chosen at boot (banjo_renderer = "renut";
@@ -603,6 +606,8 @@ if(REXGLUE_PLATFORM_SWITCH)
         # The localized copies are game code too (sa2-nx: the same rule for that file).
         set_property(SOURCE ${BANJO_HOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -fomit-frame-pointer)
     endif()
+    # One startup function registering 113,983 functions OOM-hangs aarch64-none-elf-g++ under -O3; runs once at boot.
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/generated/renut_register.cpp" APPEND PROPERTY COMPILE_OPTIONS -O0)
 endif()
 foreach(_banjo_target renut_recomp renut)
     if(TARGET ${_banjo_target} AND _banjo_round_definitions)
@@ -837,23 +842,24 @@ if(REXGLUE_PLATFORM_SWITCH)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/katamari_switch.toml" KATAMARI_PLAYER_TEXT)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/katamari_builtin_config.h.in"
                        "${CMAKE_CURRENT_BINARY_DIR}/builtin_config/katamari_builtin_config.h" @ONLY)
-        target_include_directories(renut PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/builtin_config")
+        target_include_directories(renut PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/builtin_config"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${REXSDK_DIR}/thirdparty")
         target_compile_definitions(renut PRIVATE KATAMARI_BUILTIN_CONFIG=1)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                      "${CMAKE_CURRENT_SOURCE_DIR}/katamari_switch_defaults.toml"
                      "${CMAKE_CURRENT_SOURCE_DIR}/katamari_switch.toml")
     endif()
-    set(RENUT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../tools/switch/icon/katamari_icon.jpg")
+    set(RENUT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../input/icon.jpg")
     set(RENUT_ICON_ARG)
     if(EXISTS "${RENUT_ICON}")
         set(RENUT_ICON_ARG ICON "${RENUT_ICON}")
     endif()
-    # katamari-nx (2026-11-02, the user's request): author ChanseyIsTheBest, the user's icon (the cover art).
-    # 2026-11-05: version 1.0.1, the game's memory and the NRO's code on 2 MB blocks, and the boot's cvars.
     rexglue_switch_add_nro(renut
-        NAME "Beautiful Katamari"
-        AUTHOR "ChanseyIsTheBest"
-        VERSION "1.0.1"
+        NAME "Deadpool"
+        AUTHOR "High Moon Studios / Activision"
+        VERSION "1.0.0"
         ${RENUT_ICON_ARG})
 endif()
 

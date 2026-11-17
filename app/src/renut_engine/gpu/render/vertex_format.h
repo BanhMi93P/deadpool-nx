@@ -40,6 +40,25 @@ constexpr u32 kMaxVertexStreams = 16;
 constexpr u32 kZeroStreamSlot = kMaxVertexStreams;
 constexpr u32 kZeroStreamSize = 16;
 
+// Xenos vertex formats (GPUVERTEXFORMAT).
+enum VertexFormat : u32 {
+  k8_8_8_8 = 6,
+  k2_10_10_10 = 7,
+  k10_11_11 = 16,
+  k11_11_10 = 17,
+  k16_16 = 25,
+  k16_16_16_16 = 26,
+  k16_16_Float = 31,
+  k16_16_16_16_Float = 32,
+  k32 = 33,
+  k32_32 = 34,
+  k32_32_32_32 = 35,
+  k32_Float = 36,
+  k32_32_Float = 37,
+  k32_32_32_32_Float = 38,
+  k32_32_32_Float = 57,
+};
+
 // Fields of an Xbox 360 D3DDECLTYPE, e.g. FLOAT3 = 0x2A23B9:
 // bits 0-5 Xenos vertex format, bits 6-7 the data's endian (1 8in16, 2 8in32),
 // bit 8 signed, bit 9 integer (else normalised), bits 10-21 four 3-bit fetch
@@ -89,6 +108,8 @@ struct HostVertexElement {
 struct HostVertexStream {
   bool used = false;
   u32 host_stride = 0;
+  u32 location_mask = 0;       // bit (location) for each element in this stream
+  u32 guest_vertex_bytes = 0;  // max (guest_offset + guest element bytes) within one vertex
   std::vector<HostVertexElement> elements;
 };
 
@@ -119,5 +140,6 @@ void ConvertVertices(const HostVertexElement *elements, u32 element_count, u32 h
                      u32 guest_stride, u32 vertex_count, u32 endian, u8 *host);
 
 const char *UsageSemantic(u8 usage);
+bool VertexInputLocation(u8 usage, u8 usage_index, u32 &location);
 
 } // namespace renut::gpu

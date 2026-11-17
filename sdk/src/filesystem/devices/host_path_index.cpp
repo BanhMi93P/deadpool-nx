@@ -227,7 +227,7 @@ void SerializeDirectory(Writer& w, HostPathEntry* dir, uint64_t* count) {
     // The name exactly as the host listing returned it (host_path's last component), which is
     // what PopulateEntry fed to HostPathEntry::Create.
     w.String(rex::path_to_utf8(child->host_path().filename()));
-    w.Pod<uint64_t>(uint64_t(child->size()));
+    w.Pod<uint64_t>(uint64_t(child->disk_size()));
     w.Pod<uint64_t>(child->create_timestamp());
     w.Pod<uint64_t>(child->access_timestamp());
     w.Pod<uint64_t>(child->write_timestamp());
@@ -380,7 +380,7 @@ bool ValidateDirectory(HostPathEntry* dir, uint64_t* directories, std::string* r
     auto* child = static_cast<HostPathEntry*>(h.get());
     const bool is_dir = (child->attributes() & kFileAttributeDirectory) != 0;
     b.emplace_back(rex::path_to_utf8(child->host_path().filename()), is_dir,
-                   is_dir ? 0 : uint64_t(child->size()));
+                   is_dir ? 0 : uint64_t(child->disk_size()));
   }
   std::sort(a.begin(), a.end());
   std::sort(b.begin(), b.end());

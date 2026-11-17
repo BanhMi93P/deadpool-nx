@@ -69,11 +69,14 @@ template <uint32_t N>
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gen', required=True)
-    ap.add_argument('--memcpy', default='82C111C0')
-    ap.add_argument('--memset', default='82C116F0')
+    ap.add_argument('--memcpy', default='82F8A050')
+    ap.add_argument('--memset', default='82F88DF0,82D71E58')
     ap.add_argument('--check', action='store_true')
     a = ap.parse_args()
-    call = re.compile(r'^(\t+)((?:__imp__)?sub_(%s|%s)\(ctx, base\));$' % (a.memcpy.upper(), a.memset.upper()))
+    mc = {x.strip().upper() for x in a.memcpy.split(',') if x.strip()}
+    ms = {x.strip().upper() for x in a.memset.split(',') if x.strip()}
+    alts = '|'.join(sorted(mc | ms))
+    call = re.compile(r'^(\t+)((?:__imp__)?sub_(%s)\(ctx, base\));(\s*REX_R1_\w+\(\);)?$' % alts)
     counts = collections.Counter()
     sizes = collections.Counter()
     changed = 0
@@ -91,10 +94,10 @@ def main():
                 continue
             c = call.match(line)
             if c:
-                which = 'memcpy' if c.group(3) == a.memcpy.upper() else 'memset'
+                which = 'memcpy' if c.group(3) in mc else 'memset'
                 counts[which + ' calls'] += 1
                 if known is not None and 1 <= known <= 64:
-                    lines[i] = '%sREX_%s_CONST(%d, %s);' % (c.group(1), which.upper(), known, c.group(2))
+                    lines[i] = '%sREX_%s_CONST(%d, %s);%s' % (c.group(1), which.upper(), known, c.group(2), c.group(4) or '')
                     counts[which] += 1
                     sizes[(which, known)] += 1
                 known = None

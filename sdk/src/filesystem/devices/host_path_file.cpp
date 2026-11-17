@@ -26,8 +26,10 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/platform.h>
+#include <rex/system/lzx.h>
 #include <rex/string.h>
 
 /*
@@ -643,6 +645,494 @@ StatsWindow ReadStatsWindow() {
   return e;
 }
 
+namespace {
+
+bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    char ca = a[i];
+    char cb = b[i];
+    if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+    if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+    if (ca != cb) {
+      return false;
+    }
+  }
+  return true;
+}
+
+uint32_t ReadBE32(const uint8_t* p) {
+  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) |
+         uint32_t(p[3]);
+}
+
+std::shared_ptr<const std::vector<uint8_t>> GetOrBuildPatchedCoalescedIni(
+    rex::filesystem::FileHandle* handle, size_t file_size) {
+  static std::mutex mu;
+  static bool attempted = false;
+  static std::shared_ptr<const std::vector<uint8_t>> cached;
+
+  std::lock_guard<std::mutex> lock(mu);
+  if (attempted) {
+    return cached;
+  }
+  attempted = true;
+
+  if (!handle || file_size < 16 || file_size > 4u * 1024u * 1024u) {
+    return nullptr;
+  }
+
+  std::vector<uint8_t> buf(file_size);
+  size_t total_read = 0;
+  while (total_read < file_size) {
+    size_t n = 0;
+    if (!handle->Read(total_read, buf.data() + total_read, file_size - total_read, &n) ||
+        n == 0) {
+      return nullptr;
+    }
+    total_read += n;
+  }
+
+  constexpr char kXorKey[] = "as;dwepo2345098]qw]{}p2039458pseasdfzcvvp;aseiurwefsdcfszdcvn";
+  constexpr size_t kKeyLen = sizeof(kXorKey) - 1;
+  static_assert(kKeyLen == 61);
+
+  struct CoalescedEntry {
+    std::string filename;
+    std::string text;
+  };
+  std::vector<CoalescedEntry> entries;
+  entries.reserve(32);
+
+  size_t pos = 4;
+  size_t kpos = 0;
+  while (pos + 4 <= buf.size()) {
+    const uint32_t slen = ReadBE32(&buf[pos]);
+    pos += 4;
+    if (slen == 0 || pos + slen + 4 > buf.size()) {
+      return nullptr;
+    }
+    CoalescedEntry entry;
+    entry.filename.resize(slen - 1);
+    for (uint32_t i = 0; i < slen - 1; ++i) {
+      entry.filename[i] =
+          static_cast<char>(buf[pos + i] ^ static_cast<uint8_t>(kXorKey[kpos % kKeyLen]));
+      ++kpos;
+    }
+    pos += slen;
+
+    const uint32_t dat_sz = ReadBE32(&buf[pos]);
+    pos += 4;
+    if (dat_sz == 0 || pos + dat_sz > buf.size()) {
+      return nullptr;
+    }
+    entry.text.resize(dat_sz - 1);
+    for (uint32_t i = 0; i < dat_sz - 1; ++i) {
+      entry.text[i] =
+          static_cast<char>(buf[pos + i] ^ static_cast<uint8_t>(kXorKey[kpos % kKeyLen]));
+      ++kpos;
+    }
+    pos += dat_sz;
+    entries.push_back(std::move(entry));
+  }
+  if (pos != buf.size() || entries.empty()) {
+    return nullptr;
+  }
+
+  auto ends_with_ci = [](std::string_view s, std::string_view suffix) {
+    return s.size() >= suffix.size() &&
+           EqualsIgnoreCase(s.substr(s.size() - suffix.size()), suffix);
+  };
+
+  auto replace_in_section = [](std::string& txt, std::string_view section,
+                               std::string_view old_line, std::string_view new_line) -> bool {
+    const size_t sec_pos = txt.find(section);
+    if (sec_pos == std::string::npos || (sec_pos != 0 && txt[sec_pos - 1] != '\n')) {
+      return false;
+    }
+    const size_t body_start = sec_pos + section.size();
+    size_t body_end = txt.find("\n[", body_start);
+    if (body_end == std::string::npos) {
+      body_end = txt.size();
+    }
+    std::string needle = "\n";
+    needle.append(old_line);
+    const size_t search_from = body_start > 0 ? body_start - 1 : 0;
+    const size_t hit = txt.find(needle, search_from);
+    if (hit == std::string::npos || hit >= body_end) {
+      return false;
+    }
+    txt.replace(hit + 1, old_line.size(), new_line);
+    return true;
+  };
+
+  constexpr std::string_view kOldBindings =
+      "Bindings=(Name=\"XboxTypeS_Y\",Command=\"MeleeHeavy\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_X\",Command=\"MeleeLight\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_B\",Command=\"Counter\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_A\",Command=\"PressJump\")";
+  constexpr std::string_view kNewBindings =
+      "Bindings=(Name=\"XboxTypeS_Y\",Command=\"MeleeLight\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_X\",Command=\"MeleeHeavy\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_B\",Command=\"PressJump\")\r\n"
+      "Bindings=(Name=\"XboxTypeS_A\",Command=\"Counter\")";
+  static_assert(kOldBindings.size() == kNewBindings.size());
+
+  struct IniReplacement {
+    std::string_view section;
+    std::string_view old_line;
+    std::string_view new_line;
+  };
+  static constexpr IniReplacement kEngineReplacements[] = {
+      {"[Engine.Engine]\r\n", "bEnableBranchingPCFShadows=True\r\n",
+       "bEnableBranchingPCFShadows=False\r\n"},
+      {"[SystemSettings]\r\n", "FXAA=True\r\n", "FXAA=False\r\n"},
+      {"[SystemSettings]\r\n", "UseSimpleUpscaling=FALSE\r\n", "UseSimpleUpscaling=TRUE\r\n"},
+      {"[SystemSettings]\r\n", "AmbientOcclusion=True\r\n", "AmbientOcclusion=False\r\n"},
+      {"[SystemSettings]\r\n", "MotionBlur=True\r\n", "MotionBlur=False\r\n"},
+      {"[SystemSettings]\r\n", "DropParticleDistortion=False\r\n",
+       "DropParticleDistortion=True\r\n"},
+      {"[SystemSettings]\r\n", "Distortion=True\r\n", "Distortion=False\r\n"},
+      {"[SystemSettings]\r\n", "CompositeDynamicLights=False\r\n",
+       "CompositeDynamicLights=True\r\n"},
+      {"[SystemSettings]\r\n", "MaxShadowResolution=800\r\n", "MaxShadowResolution=512\r\n"},
+      {"[SystemSettings]\r\n", "DetailMode=2\r\n", "DetailMode=0\r\n"},
+      {"[SystemSettings]\r\n", "ParticleLODBias=0\r\n", "ParticleLODBias=1\r\n"},
+      {"[SystemSettings]\r\n", "DecalCullDistanceScale=1.0\r\n",
+       "DecalCullDistanceScale=0.5\r\n"},
+      {"[SystemSettings]\r\n", "QualityBloom=True\r\n", "QualityBloom=False\r\n"},
+      {"[SystemSettings]\r\n", "DepthOfField=True\r\n", "DepthOfField=False\r\n"},
+      {"[SystemSettings]\r\n", "Bloom=True\r\n", "Bloom=False\r\n"},
+      {"[SystemSettings]\r\n", "DynamicShadows=True\r\n", "DynamicShadows=False\r\n"},
+      {"[SystemSettings]\r\n", "SkeletalMeshLODBias=0\r\n", "SkeletalMeshLODBias=1\r\n"},
+      {"[HM_Engine.FmodAudioDevice]\r\n", "MaxChannels=96\r\n", "MaxChannels=48\r\n"},
+      {"[HM_Engine.FmodAudioDevice]\r\n", "MaxCodecs=48\r\n", "MaxCodecs=24\r\n"},
+  };
+
+  bool patched_input = false;
+  bool patched_engine = false;
+  for (auto& entry : entries) {
+    if (ends_with_ci(entry.filename, "Xe-TransInput.ini")) {
+      const size_t hit = entry.text.find(kOldBindings);
+      if (hit != std::string::npos) {
+        entry.text.replace(hit, kOldBindings.size(), kNewBindings);
+        patched_input = true;
+      }
+    } else if (ends_with_ci(entry.filename, "Xe-TransEngine.ini")) {
+      const size_t orig_size = entry.text.size();
+      bool all_ok = true;
+      for (const auto& r : kEngineReplacements) {
+        if (!replace_in_section(entry.text, r.section, r.old_line, r.new_line)) {
+          all_ok = false;
+          break;
+        }
+      }
+      if (!all_ok) {
+        return nullptr;
+      }
+      // Keep total Coalesced.ini size identical (301060 bytes) via comment/whitespace padding.
+      if (entry.text.size() > orig_size) {
+        constexpr std::string_view kDebugComment =
+            "\n;=-=- NAT simulation types (works in Debug only) =-=-\r\n";
+        const size_t cpos = entry.text.find(kDebugComment);
+        if (cpos != std::string::npos) {
+          entry.text.replace(cpos, kDebugComment.size(), "\n;\r\n");
+        }
+      }
+      if (entry.text.size() > orig_size) {
+        while (entry.text.size() > orig_size + 1) {
+          const size_t bpos = entry.text.find("\r\n\r\n");
+          if (bpos == std::string::npos) {
+            break;
+          }
+          entry.text.erase(bpos, 2);
+        }
+      }
+      if (entry.text.size() < orig_size) {
+        const size_t pad = orig_size - entry.text.size();
+        if (pad >= 3) {
+          entry.text.push_back(';');
+          entry.text.append(pad - 3, ' ');
+          entry.text.append("\r\n");
+        } else {
+          entry.text.append(pad, ' ');
+        }
+      }
+      if (entry.text.size() != orig_size) {
+        return nullptr;
+      }
+      patched_engine = true;
+    }
+  }
+
+  if (!patched_input || !patched_engine) {
+    return nullptr;
+  }
+
+  std::vector<uint8_t> out;
+  out.reserve(buf.size());
+  out.insert(out.end(), buf.begin(), buf.begin() + 4);
+  size_t out_kpos = 0;
+  auto append_xored = [&](const std::string& s) {
+    const uint32_t sz = static_cast<uint32_t>(s.size() + 1);
+    out.push_back(static_cast<uint8_t>((sz >> 24) & 0xFF));
+    out.push_back(static_cast<uint8_t>((sz >> 16) & 0xFF));
+    out.push_back(static_cast<uint8_t>((sz >> 8) & 0xFF));
+    out.push_back(static_cast<uint8_t>(sz & 0xFF));
+    for (size_t i = 0; i < s.size(); ++i) {
+      out.push_back(static_cast<uint8_t>(s[i]) ^
+                    static_cast<uint8_t>(kXorKey[out_kpos % kKeyLen]));
+      ++out_kpos;
+    }
+    out.push_back(0);
+  };
+  for (const auto& entry : entries) {
+    append_xored(entry.filename);
+    append_xored(entry.text);
+  }
+  if (out.size() != buf.size()) {
+    return nullptr;
+  }
+  cached = std::make_shared<const std::vector<uint8_t>>(std::move(out));
+  return cached;
+}
+
+void WriteBE32(uint8_t* p, uint32_t v) {
+  p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
+  p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
+  p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
+  p[3] = static_cast<uint8_t>(v & 0xFF);
+}
+
+bool PatchButtonImport(std::vector<uint8_t>& blk, const char* old_name, const char* new_name) {
+  const size_t nlen = std::strlen(old_name) + 1;
+  if (std::strlen(new_name) + 1 != nlen) {
+    return false;
+  }
+  bool any = false;
+  for (size_t i = 0; i + nlen <= blk.size(); ++i) {
+    if (std::memcmp(blk.data() + i, old_name, nlen) == 0) {
+      std::memcpy(blk.data() + i, new_name, nlen);
+      any = true;
+    }
+  }
+  return any;
+}
+
+template <typename PatchFn>
+bool PatchTransGameChunkBlock(std::vector<uint8_t>& buf, uint32_t target_start, uint32_t target_end,
+                              const char* label, PatchFn&& patch_fn) {
+  if (ReadBE32(buf.data()) != 0x9E2A83C1u || ReadBE32(&buf[0x75]) != 0x10u) {
+    return false;
+  }
+  const uint32_t chunk_cnt = ReadBE32(&buf[0x79]);
+  if (chunk_cnt == 0 || 0x7Du + size_t(chunk_cnt) * 16 > buf.size()) {
+    return false;
+  }
+
+  uint32_t target_ci = UINT32_MAX;
+  for (uint32_t i = 0; i < chunk_cnt; ++i) {
+    const uint32_t uo = ReadBE32(&buf[0x7Du + i * 16]);
+    const uint32_t us = ReadBE32(&buf[0x7Du + i * 16 + 4]);
+    if (uo <= target_start && uo + us >= target_end) {
+      target_ci = i;
+      break;
+    }
+  }
+  if (target_ci == UINT32_MAX) {
+    return false;
+  }
+
+  const uint32_t chunk_uo = ReadBE32(&buf[0x7Du + target_ci * 16]);
+  const uint32_t chunk_co = ReadBE32(&buf[0x7Du + target_ci * 16 + 8]);
+  const uint32_t chunk_cs = ReadBE32(&buf[0x7Du + target_ci * 16 + 12]);
+  if (chunk_co + 16 > buf.size() || chunk_co + chunk_cs > buf.size()) {
+    return false;
+  }
+
+  const uint32_t comp_tot = ReadBE32(&buf[chunk_co + 8]);
+  const uint32_t uncomp_tot = ReadBE32(&buf[chunk_co + 12]);
+  struct BlkInfo {
+    uint32_t bc;
+    uint32_t bu;
+  };
+  std::vector<BlkInfo> blks;
+  uint32_t bpos = chunk_co + 16;
+  uint32_t acc = 0;
+  while (acc < uncomp_tot && bpos + 8 <= buf.size()) {
+    const uint32_t bc = ReadBE32(&buf[bpos]);
+    const uint32_t bu = ReadBE32(&buf[bpos + 4]);
+    blks.push_back({bc, bu});
+    bpos += 8;
+    acc += bu;
+  }
+  if (acc != uncomp_tot) {
+    return false;
+  }
+
+  uint32_t data_off = bpos;
+  uint32_t uoff = chunk_uo;
+  uint32_t target_bi = UINT32_MAX;
+  for (uint32_t i = 0; i < blks.size(); ++i) {
+    if (uoff <= target_start && uoff + blks[i].bu >= target_end) {
+      target_bi = i;
+      break;
+    }
+    data_off += blks[i].bc;
+    uoff += blks[i].bu;
+  }
+  if (target_bi == UINT32_MAX || blks[target_bi].bu != 0x20000u ||
+      data_off + blks[target_bi].bc > buf.size()) {
+    return false;
+  }
+
+  // Unpack XMemCompress subchunks for the target 128KB block.
+  std::vector<uint8_t> raw_lzx;
+  uint32_t sp = data_off;
+  const uint32_t end_p = data_off + blks[target_bi].bc;
+  while (sp + 2 <= end_p) {
+    uint16_t c_sz = 0;
+    if (buf[sp] == 0xFF) {
+      if (sp + 5 > end_p) break;
+      c_sz = static_cast<uint16_t>((buf[sp + 3] << 8) | buf[sp + 4]);
+      sp += 5;
+    } else {
+      c_sz = static_cast<uint16_t>((buf[sp] << 8) | buf[sp + 1]);
+      sp += 2;
+    }
+    if (c_sz == 0 || sp + c_sz > end_p) break;
+    raw_lzx.insert(raw_lzx.end(), buf.data() + sp, buf.data() + sp + c_sz);
+    sp += c_sz;
+  }
+
+  std::vector<uint8_t> blk(0x20000u);
+  if (lzx_decompress(raw_lzx.data(), raw_lzx.size(), blk.data(), blk.size(), 0x20000u, nullptr,
+                     0) != 0) {
+    REXFS_WARN("[io] TransGame.xxx {} lzx_decompress failed", label);
+    return false;
+  }
+
+  if (!patch_fn(blk)) {
+    REXFS_WARN("[io] TransGame.xxx {} patch failed: target import markers missing", label);
+    return false;
+  }
+
+  // Re-emit as 4 LZX uncompressed blocks of 0x8000 bytes each (block 0 has
+  // intel_e8=0, blocks 1..3 start directly with block_type=3), each in its own
+  // 2-byte BE subchunk (c_sz = 0x8010, u_sz = 0x8000).
+  std::vector<uint8_t> framed;
+  framed.reserve(4 * (2 + 16 + 0x8000u) + 9);
+  for (size_t idx = 0; idx < 4; ++idx) {
+    const uint16_t part = 0x8010u;
+    framed.push_back(static_cast<uint8_t>((part >> 8) & 0xFF));
+    framed.push_back(static_cast<uint8_t>(part & 0xFF));
+    const uint8_t w0_lo = (idx == 0) ? 0x08u : 0x10u;
+    const uint8_t w0_hi = (idx == 0) ? 0x30u : 0x60u;
+    const uint8_t hdr[16] = {w0_lo, w0_hi, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                             0x01,  0x00,  0x00, 0x00, 0x01, 0x00, 0x00, 0x00};
+    framed.insert(framed.end(), hdr, hdr + 16);
+    const size_t off = idx * 0x8000u;
+    framed.insert(framed.end(), blk.data() + off, blk.data() + off + 0x8000u);
+  }
+  // XMemDecompress reads src_len - 4 (sub_823BB340) - 5 (sub_82D86DA0) and exits on r29 == 0.
+  framed.insert(framed.end(), 9u, 0u);
+
+  const int64_t delta = int64_t(framed.size()) - int64_t(blks[target_bi].bc);
+  std::vector<uint8_t> out;
+  out.reserve(size_t(int64_t(buf.size()) + delta));
+  out.insert(out.end(), buf.data(), buf.data() + data_off);
+  out.insert(out.end(), framed.begin(), framed.end());
+  out.insert(out.end(), buf.data() + end_p, buf.data() + buf.size());
+
+  WriteBE32(&out[chunk_co + 8], uint32_t(int64_t(comp_tot) + delta));
+  WriteBE32(&out[chunk_co + 16 + target_bi * 8], uint32_t(framed.size()));
+  WriteBE32(&out[0x7Du + target_ci * 16 + 12], uint32_t(int64_t(chunk_cs) + delta));
+  for (uint32_t i = target_ci + 1; i < chunk_cnt; ++i) {
+    const uint32_t ci_off = 0x7Du + i * 16 + 8;
+    WriteBE32(&out[ci_off], uint32_t(int64_t(ReadBE32(&out[ci_off])) + delta));
+  }
+  buf.swap(out);
+  return true;
+}
+
+std::shared_ptr<const std::vector<uint8_t>> GetOrBuildPatchedTransGameXxx(
+    rex::filesystem::FileHandle* handle, size_t file_size) {
+  static std::mutex mu;
+  static bool attempted = false;
+  static std::shared_ptr<const std::vector<uint8_t>> cached;
+
+  std::lock_guard<std::mutex> lock(mu);
+  if (attempted) {
+    return cached;
+  }
+
+  if (!handle || file_size < 0x200 || file_size > 32u * 1024u * 1024u) {
+    REXFS_WARN("[io] TransGame.xxx patch skipped: invalid handle or size {}", file_size);
+    return nullptr;
+  }
+
+  std::vector<uint8_t> buf(file_size);
+  size_t total_read = 0;
+  while (total_read < file_size) {
+    size_t n = 0;
+    if (!handle->Read(total_read, buf.data() + total_read, file_size - total_read, &n) ||
+        n == 0) {
+      REXFS_WARN("[io] TransGame.xxx patch read incomplete ({} of {} bytes); will retry",
+                 total_read, file_size);
+      return nullptr;
+    }
+    total_read += n;
+  }
+
+  // Only permanently mark attempted after a complete read of the real disk file.
+  attempted = true;
+
+  // 1) Momentum Jump (sprite 0x0309 -> 0x006f in Chunk 18 Blk 7): Jump is bound to B, so show Gamepad_B.
+  if (!PatchTransGameChunkBlock(buf, 0x12FE4E2u, 0x12FE4ECu, "chunk18_blk7",
+                                [](std::vector<uint8_t>& blk) {
+                                  return PatchButtonImport(blk, "Gamepad_A", "Gamepad_B");
+                                })) {
+    return nullptr;
+  }
+
+  // 2) Enemy Counter (0x02d3 -> Gamepad_A_64) & Momentum Counter (0x02f7 -> Gamepad_A) in Chunk 19 Blk 1.
+  if (!PatchTransGameChunkBlock(buf, 0x132CA26u, 0x1331886u, "chunk19_blk1",
+                                [](std::vector<uint8_t>& blk) {
+                                  return PatchButtonImport(blk, "Gamepad_B_64", "Gamepad_A_64") &&
+                                         PatchButtonImport(blk, "Gamepad_B", "Gamepad_A");
+                                })) {
+    return nullptr;
+  }
+
+  cached = std::make_shared<const std::vector<uint8_t>>(std::move(buf));
+  REXFS_INFO(
+      "[io] TransGame.xxx patched in memory: {} -> {} bytes (Gamepad_A -> Gamepad_B for Jump Momentum, "
+      "Gamepad_B_64 -> Gamepad_A_64, Gamepad_B -> Gamepad_A)",
+      file_size, cached->size());
+  return cached;
+}
+
+}  // namespace
+
+size_t GetPatchedTransGameXxxSize(const std::filesystem::path& host_path, size_t disk_size) {
+  size_t real_disk_size = disk_size;
+  rex::filesystem::FileInfo real_info;
+  if (rex::filesystem::GetInfo(host_path, &real_info) &&
+      real_info.type == rex::filesystem::FileInfo::Type::kFile &&
+      real_info.total_size >= 0x200) {
+    real_disk_size = real_info.total_size;
+  }
+  auto handle = rex::filesystem::FileHandle::OpenExisting(
+      host_path, FileAccess::kGenericRead, true);
+  if (!handle) {
+    return disk_size;
+  }
+  auto patched = GetOrBuildPatchedTransGameXxx(handle.get(), real_disk_size);
+  return patched ? patched->size() : disk_size;
+}
+
 HostPathFile::HostPathFile(uint32_t file_access, HostPathEntry* entry,
                            std::unique_ptr<rex::filesystem::FileHandle> file_handle)
     : File(file_access, entry), file_handle_(std::move(file_handle)) {
@@ -652,6 +1142,23 @@ HostPathFile::HostPathFile(uint32_t file_access, HostPathEntry* entry,
   const bool wants_write =
       (file_access & (FileAccess::kGenericWrite | FileAccess::kFileWriteData |
                       FileAccess::kFileAppendData | FileAccess::kGenericAll)) != 0;
+  if (file_handle_ && entry && entry->is_read_only() && !wants_write &&
+      EqualsIgnoreCase(entry->name(), "Coalesced.ini")) {
+    patched_coalesced_ = GetOrBuildPatchedCoalescedIni(file_handle_.get(), entry->size());
+    if (patched_coalesced_) {
+      return;
+    }
+  }
+  if (file_handle_ && entry && entry->is_read_only() && !wants_write &&
+      EqualsIgnoreCase(entry->name(), "TransGame.xxx")) {
+    const size_t raw_size =
+        entry->disk_size() ? size_t(entry->disk_size()) : entry->size();
+    patched_coalesced_ = GetOrBuildPatchedTransGameXxx(file_handle_.get(), raw_size);
+    if (patched_coalesced_) {
+      entry->SetPatchedSize(patched_coalesced_->size());
+      return;
+    }
+  }
   /*
    * The RAM cache, with the same conditions as the window except that it has its own cvar. The id
    * is requested once, at open time, so the path map is not touched on every read.
@@ -829,6 +1336,20 @@ X_STATUS HostPathFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
   }
   if (!(file_access_ & (FileAccess::kGenericRead | FileAccess::kFileReadData))) {
     return X_STATUS_ACCESS_DENIED;
+  }
+
+  if (patched_coalesced_) {
+    if (byte_offset >= patched_coalesced_->size()) {
+      *out_bytes_read = 0;
+      return X_STATUS_END_OF_FILE;
+    }
+    const size_t avail = patched_coalesced_->size() - byte_offset;
+    const size_t to_copy = std::min(buffer.size(), avail);
+    if (to_copy > 0) {
+      std::memcpy(buffer.data(), patched_coalesced_->data() + byte_offset, to_copy);
+    }
+    *out_bytes_read = to_copy;
+    return X_STATUS_SUCCESS;
   }
 
   const size_t request = buffer.size();

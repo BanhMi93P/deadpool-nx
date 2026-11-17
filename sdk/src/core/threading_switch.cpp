@@ -807,6 +807,32 @@ int RexSwitchApplyNamedPriority(unsigned handle, const char* name) {
 
 unsigned RexSwitchNamedPrioritiesApplied(void) { return g_named_applied.load(std::memory_order_relaxed); }
 
+void RexSwitchSanitizeThreadTls(void) {
+  uint8_t* tls = static_cast<uint8_t*>(armGetTls());
+  if (tls) {
+    // libnx TLS slots are located at offset 0x108.
+    // There are 27 slots (indices 0..26, 0xd8 bytes), ending at offset 0x1e0.
+    // Offset 0x1e0 is magic (0x21545624), 0x1e4 is thread handle, 0x1e8 is Thread* self.
+    // Zeroing these slots ensures pthread_getspecific returns NULL on uninitialized keys.
+    std::memset(tls + 0x108, 0, 0xd8);
+  }
+  Thread* self = threadGetSelf();
+  if (self) {
+    self->tls_array = tls ? reinterpret_cast<void**>(tls + 0x108) : nullptr;
+  }
+}
+
+void RexSwitchThreadExit(void) {
+  RexSwitchSanitizeThreadTls();
+  Thread* self = threadGetSelf();
+  if (self) {
+    threadExit();
+  } else {
+    svcExitThread();
+  }
+  __builtin_unreachable();
+}
+
 }  // extern "C"
 
 #endif  /* REX_PLATFORM_SWITCH */

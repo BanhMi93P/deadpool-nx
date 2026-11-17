@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -152,6 +153,10 @@ class HostPathFile : public File {
   uint32_t cache_id_ = 0;
   // Tag in the startup trace (0 = not traced). See startup_trace.cpp.
   uint32_t trace_tag_ = 0;
+  // In-memory patched copy of Deadpool's Coalesced.ini (never modifies disk).
+  std::shared_ptr<const std::vector<uint8_t>> patched_coalesced_;
 };
+
+size_t GetPatchedTransGameXxxSize(const std::filesystem::path& host_path, size_t disk_size);
 
 }  // namespace rex::filesystem

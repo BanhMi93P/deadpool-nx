@@ -93,7 +93,9 @@ if(NOT TARGET rexglue_switch_startup)
         "LINKER:--wrap=nvFenceWait,--wrap=nvGpuChannelKickoff,--wrap=nvMapCreate"
         "LINKER:--wrap=nvAddressSpaceAllocFixed,--wrap=nvioctlNvhostAsGpu_MapBufferEx"
         "LINKER:--wrap=armDCacheClean,--wrap=nwindowQueueBuffer,--wrap=bqDequeueBuffer"
-        "LINKER:--wrap=svcSleepThread,--wrap=svcSetThreadCoreMask")
+        "LINKER:--wrap=svcSleepThread,--wrap=svcSetThreadCoreMask"
+        "LINKER:--wrap=__cxa_get_globals,--wrap=__cxa_get_globals_fast"
+        "LINKER:--wrap=_ZSt18uncaught_exceptionv,--wrap=_ZSt19uncaught_exceptionsv")
 endif()
 
 function(rexglue_switch_configure_target target_name)

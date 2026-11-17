@@ -111,6 +111,7 @@ namespace plume {
         R32G32_SINT,
         R8G8B8A8_TYPELESS,
         R8G8B8A8_UNORM,
+        R8G8B8A8_UNORM_SRGB,
         R8G8B8A8_UINT,
         R8G8B8A8_SNORM,
         R8G8B8A8_SINT,
@@ -564,6 +565,7 @@ namespace plume {
             return 8;
         case RenderFormat::R8G8B8A8_TYPELESS:
         case RenderFormat::R8G8B8A8_UNORM:
+        case RenderFormat::R8G8B8A8_UNORM_SRGB:
         case RenderFormat::R8G8B8A8_UINT:
         case RenderFormat::R8G8B8A8_SNORM:
         case RenderFormat::R8G8B8A8_SINT:
@@ -652,6 +654,7 @@ namespace plume {
         case RenderFormat::R32G32_SINT:
         case RenderFormat::R8G8B8A8_TYPELESS:
         case RenderFormat::R8G8B8A8_UNORM:
+        case RenderFormat::R8G8B8A8_UNORM_SRGB:
         case RenderFormat::R8G8B8A8_UINT:
         case RenderFormat::R8G8B8A8_SNORM:
         case RenderFormat::R8G8B8A8_SINT:

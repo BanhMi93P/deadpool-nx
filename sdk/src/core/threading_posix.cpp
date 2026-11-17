@@ -1872,7 +1872,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
     }
     NotifyMulti();
     if (is_current_thread) {
+#if defined(__SWITCH__)
+      RexSwitchThreadExit();
+#else
       pthread_exit(reinterpret_cast<void*>(exit_code));
+#endif
     } else {
 #if REX_PLATFORM_ANDROID
       if (pthread_kill(thread_, GetSystemSignal(SignalType::kThreadTerminate)) != 0) {
@@ -2413,6 +2417,9 @@ class PosixThread : public PosixConditionHandle<Thread> {
 thread_local PosixThread* current_thread_ = nullptr;
 
 void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+#if defined(__SWITCH__)
+  RexSwitchSanitizeThreadTls();
+#endif
 #if !REX_PLATFORM_ANDROID
   if (pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, nullptr) != 0) {
     assert_always();
@@ -2471,6 +2478,9 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
 
   current_thread_ = nullptr;
   current_thread_condition_ = nullptr;
+#if defined(__SWITCH__)
+  RexSwitchSanitizeThreadTls();
+#endif
   return nullptr;
 }
 
@@ -2519,8 +2529,14 @@ void Thread::Exit(int exit_code) {
   if (current_thread_) {
     current_thread_->Terminate(exit_code);
   } else {
+#if defined(__SWITCH__)
+    current_thread_ = nullptr;
+    current_thread_condition_ = nullptr;
+    RexSwitchThreadExit();
+#else
     // Should only happen with the main thread
     pthread_exit(reinterpret_cast<void*>(exit_code));
+#endif
   }
   // Function must not return
   assert_always();

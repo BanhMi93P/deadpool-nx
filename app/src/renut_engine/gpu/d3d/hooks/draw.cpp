@@ -52,7 +52,7 @@ namespace {
 constexpr u32 kE_OUTOFMEMORY = 0x8007000Eu;
 // D3DVIEWPORT9 {0, 0, 0xFFFF, 0xFFFF, 0.0, 1.0} in N&B's data (unk_82001744):
 // the whole surface.
-constexpr u32 kFullViewport = 0x820FAEB4;  // katamari-nx: 0x82001744->0x820FAEB4
+constexpr u32 kFullViewport = 0x820018DC;
 // D3DRS_HIZWRITEENABLE's index in the render state table.
 constexpr u32 kRenderStateHiZWriteEnable = 97;
 
@@ -185,18 +185,19 @@ void D3DDevice_DrawVerticesUP_hook(u32 device, u32 primitive, u32 vertex_count, 
 void D3DDevice_DrawIndexedVerticesUP_hook(u32 device, u32 primitive, u32 min_vertex,
                                           u32 num_vertices, u32 index_count, u32 index_data,
                                           u32 index_format, u32 vertex_data, u32 stride) {
-  if (!Active() || !index_data || !vertex_data)
+  if (!Active() || !index_data || !vertex_data || !num_vertices || !index_count)
     return;
   DrawCall call;
   call.primitive = primitive;
   call.indexed = true;
+  call.base_vertex = -i32(min_vertex);
   call.count = index_count;
   call.up_indices = GuestPtr<const u8>(index_data);
   call.up_indices_32 = (index_format & 4) != 0;  // D3DFMT_INDEX32
-  call.up_vertices = GuestPtr<const u8>(vertex_data);
+  call.up_vertices = GuestPtr<const u8>(vertex_data + min_vertex * stride);
   call.up_stride = stride;
-  call.up_vertex_count = min_vertex + num_vertices;
-  const u32 vertex_bytes = call.up_vertex_count * stride;
+  call.up_vertex_count = num_vertices;
+  const u32 vertex_bytes = num_vertices * stride;
   const u32 index_bytes = index_count * (call.up_indices_32 ? 4 : 2);
   if (IsRecordingCommandBuffer(device))
     RecordDraw(device, call, vertex_bytes, index_bytes);
@@ -235,6 +236,67 @@ u32 D3DDevice_BeginVertices_hook(u32 device, u32 primitive, u32 vertex_count, u3
   else
     FlushDeferredVertices(device);
   return scratch;
+}
+
+// HRESULT D3DDevice_BeginIndexedVertices(D3DDevice*, D3DPRIMITIVETYPE, INT BaseVertexIndex,
+//     UINT NumVertices, UINT IndexCount, D3DFORMAT IndexDataFormat, UINT VertexStreamZeroStride,
+//     void **ppIndexData, void **ppVertexData) [sub_82DA5AC8]
+u32 D3DDevice_BeginIndexedVertices_hook(u32 device, u32 primitive, i32 base_vertex,
+                                        u32 num_vertices, u32 index_count, u32 index_format,
+                                        u32 stride, u32 pp_index_data, u32 pp_vertex_data) {
+  const u64 vertex_bytes = u64(num_vertices) * stride;
+  const bool indices_32 = (index_format & 4) != 0;
+  const u64 index_bytes = u64(index_count) * (indices_32 ? 4 : 2);
+  const u64 index_offset = (vertex_bytes + 15) & ~15ull;
+  if (!vertex_bytes || !index_bytes || index_offset + index_bytes > kVerticesScratchSize) {
+    if (pp_index_data)
+      StoreU32(pp_index_data, 0);
+    if (pp_vertex_data)
+      StoreU32(pp_vertex_data, 0);
+    return kE_OUTOFMEMORY;
+  }
+  StoreU32(device + d3d::kDeviceOffsetVerticesRingEnd,
+           LoadU32(device + u32(offsetof(d3d::Device, m_pRing))));
+
+  const u32 scratch = VerticesScratch(device);
+  if (!scratch) {
+    if (pp_index_data)
+      StoreU32(pp_index_data, 0);
+    if (pp_vertex_data)
+      StoreU32(pp_vertex_data, 0);
+    return kE_OUTOFMEMORY;
+  }
+  const u32 vertex_scratch = scratch;
+  const u32 index_scratch = scratch + u32(index_offset);
+  if (pp_index_data)
+    StoreU32(pp_index_data, index_scratch);
+  if (pp_vertex_data)
+    StoreU32(pp_vertex_data, vertex_scratch);
+
+  DrawCall call;
+  call.primitive = primitive;
+  call.indexed = true;
+  call.base_vertex = base_vertex;
+  call.count = index_count;
+  call.up_indices = GuestPtr<const u8>(index_scratch);
+  call.up_indices_32 = indices_32;
+  call.up_vertices = GuestPtr<const u8>(vertex_scratch);
+  call.up_stride = stride;
+  call.up_vertex_count = num_vertices;
+  if (IsRecordingCommandBuffer(device))
+    RecordDeferredDraw(device, call, call.up_vertices, u32(vertex_bytes), call.up_indices, u32(index_bytes));
+  else if (Active())
+    QueueDeferredDraw(device, call, call.up_vertices, u32(vertex_bytes), call.up_indices, u32(index_bytes));
+  else
+    FlushDeferredVertices(device);
+  return 0;
+}
+
+// void D3DDevice_EndVertices(D3DDevice*) / D3DDevice_EndIndexedVertices(D3DDevice*) [sub_82DA55B0]
+void D3DDevice_EndVertices_hook(u32 device) {
+  StoreU32(device + u32(offsetof(d3d::Device, m_pRing)),
+           LoadU32(device + d3d::kDeviceOffsetVerticesRingEnd));
+  FlushDeferredVertices(device);
 }
 
 // A clear: the renderer's, recorded or queued, then N&B's device work.
@@ -634,3 +696,80 @@ BANJO_RENUT_UNHOOKED_HOOK_SHARED(sub_82237D80, D3DDevice_EndExport_hook);  // D3
 BANJO_RENUT_HOOK(sub_824E9428, D3DDevice_Present_hook);  // D3DDevice_Present  // katamari-nx: N&B sub_826352B8, D3DDevice_Present: SynchronizeToPresentationInterval sub_824E89E8, Resolve sub_824F12B8, KickOff sub_824E0298, then Swap sub_824E8E90; sig 0.43/0.26
 BANJO_RENUT_HOOK(sub_824D4930, D3DDevice_SetVertexShader_hook);  // D3DDevice_SetVertexShader  // katamari-nx: N&B sub_821F90D8, signature 0.87 (next 0.75)
 BANJO_RENUT_HOOK(sub_824D4630, D3DDevice_SetPixelShader_hook);  // D3DDevice_SetPixelShader  // katamari-nx: N&B sub_821F58A8, signature 0.85 (next 0.73)
+
+// ---------------------------------------------------------------------------
+// Deadpool draw, Begin/EndVertices, ClearF & Resolve hooks (XDK 21173)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void QueueHostClear(u32 device, u32 flags, const ClearRect *rect, const float color[4], float z, u32 stencil) {
+  if (IsRecordingCommandBuffer(device))
+    RecordClear(device, flags, rect, color, z, stencil);
+  else if (Active())
+    QueueClear(device, flags, rect, color, z, stencil);
+}
+
+void QueueHostResolve(u32 device, u32 flags, const ClearRect *rect, u32 dest_texture, i32 dest_x, i32 dest_y,
+                      u32 dest_level, u32 dest_slice, u32 color_va, float clear_z, u32 clear_stencil) {
+  float color[4] = {0, 0, 0, 0};
+  const bool has_color = color_va && ReadVector4(color_va, color);
+  if (IsRecordingCommandBuffer(device)) {
+    RecordResolve(device, flags, rect, dest_texture, dest_x, dest_y, dest_level, dest_slice,
+                  has_color ? color : nullptr, clear_z, clear_stencil);
+  } else if (Active()) {
+    QueueResolve(device, flags, rect, dest_texture, dest_x, dest_y, dest_level, dest_slice,
+                 has_color ? color : nullptr, clear_z, clear_stencil);
+  }
+}
+
+}  // namespace
+
+DEADPOOL_RENUT_HOOK(sub_82DA60A8, D3DDevice_DrawVertices_hook);  // D3DDevice_DrawVertices
+DEADPOOL_RENUT_HOOK(sub_82DA64C0, D3DDevice_DrawIndexedVertices_hook);  // D3DDevice_DrawIndexedVertices
+DEADPOOL_RENUT_HOOK(sub_82DA5A80, D3DDevice_DrawVerticesUP_hook);  // D3DDevice_DrawVerticesUP
+DEADPOOL_RENUT_HOOK(sub_82DA55C0, D3DDevice_BeginVertices_hook);  // D3DDevice_BeginVertices
+DEADPOOL_RENUT_HOOK(sub_82DA55B0, D3DDevice_EndVertices_hook);  // D3DDevice_EndVertices / EndIndexedVertices
+
+// void D3DDevice_DrawIndexedVerticesUP(...) [sub_82DA6008]: VertexStreamZeroStride in caller's stack at +84.
+DEADPOOL_RENUT_HOOK_RAW(sub_82DA6008) {
+  const u32 stride = LoadU32(ctx.r1.u32 + 84);
+  D3DDevice_DrawIndexedVerticesUP_hook(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
+                                       ctx.r9.u32, ctx.r10.u32, stride);
+}
+
+// HRESULT D3DDevice_BeginIndexedVertices(...) [sub_82DA5AC8]: ppVertexData in caller's stack at +84.
+DEADPOOL_RENUT_HOOK_RAW(sub_82DA5AC8) {
+  const u32 pp_vertex_data = LoadU32(ctx.r1.u32 + 84);
+  ctx.r3.u64 = D3DDevice_BeginIndexedVertices_hook(ctx.r3.u32, ctx.r4.u32, i32(ctx.r5.u32), ctx.r6.u32, ctx.r7.u32,
+                                                   ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, pp_vertex_data);
+}
+
+// void D3DDevice_ClearF(...) [sub_82DA25C0]: Z in f1 (r7's slot), Stencil in r8.
+DEADPOOL_RENUT_HOOK_RAW(sub_82DA25C0) {
+  const u32 device = ctx.r3.u32, flags = ctx.r4.u32, rect_va = ctx.r5.u32, color_va = ctx.r6.u32;
+  ClearRect rect;
+  const bool has_rect = rect_va && ReadRect(rect_va, rect);
+  float color[4] = {0, 0, 0, 0};
+  if (color_va)
+    ReadVector4(color_va, color);
+  QueueHostClear(device, flags, has_rect ? &rect : nullptr, color, float(ctx.f1.f64), ctx.r8.u32);
+  __imp__sub_82DA25C0(ctx, base);
+}
+
+// void D3DDevice_Resolve(...) [sub_82DA84C0]: ClearZ in f1, ClearStencil at +92.
+DEADPOOL_RENUT_HOOK_RAW(sub_82DA84C0) {
+  const u32 device = ctx.r3.u32, flags = ctx.r4.u32, rect_va = ctx.r5.u32, dest_texture = ctx.r6.u32;
+  const u32 point_va = ctx.r7.u32, dest_level = ctx.r8.u32, dest_slice = ctx.r9.u32, color_va = ctx.r10.u32;
+  const u32 clear_stencil = LoadU32(ctx.r1.u32 + 92);
+  ClearRect rect{};
+  const bool has_rect = rect_va && ReadRect(rect_va, rect);
+  i32 dest_x = 0, dest_y = 0;
+  if (const auto *p = point_va ? GuestPtr<const be_u32>(point_va) : nullptr) {
+    dest_x = i32(u32(p[0]));
+    dest_y = i32(u32(p[1]));
+  }
+  QueueHostResolve(device, flags, has_rect ? &rect : nullptr, dest_texture, dest_x, dest_y, dest_level, dest_slice,
+                   color_va, float(ctx.f1.f64), clear_stencil);
+  __imp__sub_82DA84C0(ctx, base);
+}

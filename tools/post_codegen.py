@@ -57,7 +57,8 @@ PROMOTIONS = os.path.join(APP, 'indirect_promotions.txt')
 # Where a function's address can be written down outside the generated code (a hook, a host call of the original, a
 # named function): the app's and the SDK's sources, and the tomls. NOT config/renut_funcs.toml: it lists every
 # function boundary of the game, which would make every function look hooked.
-HOOK_TOMLS = [APP, os.path.join(APP, 'config', 'renut_hooks.toml'), os.path.join(APP, 'config', 'renut_gpu_funcs.toml'),
+HOOK_TOMLS = [os.path.join(APP, 'renut_config.toml'), os.path.join(APP, 'renut_manifest.toml'),
+              os.path.join(APP, 'config', 'renut_hooks.toml'), os.path.join(APP, 'config', 'renut_gpu_funcs.toml'),
               os.path.join(APP, 'config', 'renut_crt.toml')]
 
 
@@ -79,6 +80,8 @@ def main():
         sys.exit('post_codegen: out/renut_image.bin is missing (the image dump of the code generator): run the PC '
                  'build through tools\\pc_env.bat, which sets REXGLUE_DUMP_IMAGE, or set it for one codegen run')
     xex = os.path.join(APP, 'assets', 'default.xex')
+    if not os.path.isfile(xex):
+        xex = os.path.join(ROOT, 'game', 'default.xex')
     # banjo-nx (2026-10-29): and the title update's patch next to it (the image is the patched one).
     xexp = xex + 'p'
     if os.path.isfile(xexp) and os.path.getmtime(xexp) > os.path.getmtime(IMAGE):
@@ -122,6 +125,8 @@ def main():
     # --xex: loads of the XEX's import records (kernel variable addresses the loader writes) stay loads (from
     # peggle2-nx, 2026-10-15; found by futari-nx: 77 such loads were folded here).
     xex = os.path.join(ROOT, 'app', 'assets', 'default.xex')
+    if not os.path.isfile(xex):
+        xex = os.path.join(ROOT, 'game', 'default.xex')
     run(tool('ro_constants.py'), '--gen', gen, '--image', IMAGE, *(['--xex', xex] if os.path.isfile(xex) else []))
     run(tool('float_loads.py'), '--gen', gen)
     run(tool('frame_traffic.py'), '--gen', gen)
@@ -134,7 +139,7 @@ def main():
     run(tool('fp_sign_ops.py'), '--gen', gen)
     run(tool('leaf_dead_stores.py'), '--gen', gen, '--image', IMAGE)
     run(tool('single_floats.py'), '--gen', gen)
-    run(tool('inline_memcalls.py'), '--gen', gen)
+    run(tool('inline_memcalls.py'), '--gen', gen, '--memcpy', '82F8A050', '--memset', '82F88DF0,82D71E58')
     run(tool('vec_unaligned_stores.py'), '--gen', gen)
     # blur-nx (2026-11-11): stvewx / stvehx lanes read from the register, not stored to the stack and loaded back (the
     # A57 cannot forward the wider store; sdk/include/rex/ppc/vec_lane.h, checked on the device by the forms

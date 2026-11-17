@@ -16,6 +16,8 @@ REXCVAR_DEFINE_STRING(banjo_renderer, "native", "Banjo",
     .allowed({"native", "renut", "emulated"})
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+REXCVAR_DEFINE_BOOL(deadpool_renderer, true, "Renut", "Enable native renderer for Deadpool");
+
 namespace banjo::renut_gpu {
 
 // banjo-nx (2026-10-19, CPU proposal 22): Active() is inline (banjo_renut_select.h), a byte load after the first call.
