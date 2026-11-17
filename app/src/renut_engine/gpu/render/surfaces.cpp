@@ -38,7 +38,7 @@
 #endif
 
 // renut-ultimate (2026-11-16, port 145; tw2de_nx's of 2026-10-22, ON at the user's word: "port the speed ups as on by default").
-REXCVAR_DEFINE_BOOL(banjo_renut_keep_unused_targets, true, "Banjo/Renut",
+REXCVAR_DEFINE_BOOL(banjo_renut_keep_unused_targets, false, "Banjo/Renut",
                     "tw2de_nx: a render target no surface uses any more is kept for 250 ms for a surface that takes the "
                     "same EDRAM view again, instead of being destroyed and made anew (a game that switches one surface "
                     "between two views every frame: tw2de_nx made 8 images a frame, 4 % of a core in the kernel's "

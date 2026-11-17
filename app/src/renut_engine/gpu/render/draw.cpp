@@ -11168,6 +11168,7 @@ int FastDrawLocked(const u8 *device_state, const DrawCall &call, const ReplayCon
     f.fx_float_sampled = f.fx_words_viewed = 0;
     f.layout_epoch = g_layout_epoch;
   } else if (textures_inputs) {
+    textures_refilled = true;
     bool all_memo = false;
     g_handover_targets = &targets;
     FillTextures(device, texture_mask, sc, f.fx, &all_memo, fetches, nullptr);

@@ -6,33 +6,36 @@ with open('app/out/renut_switch/shader_cache_switch.cpp', 'r', encoding='utf-8',
 with open('out/test_capture/test.cpp', 'r', encoding='utf-8', errors='ignore') as f:
     test_cpp = f.read()
 
-# 1. Parse existing entries
-entry_line_re = re.compile(r'^\t\{ (0x[0-9A-Fa-f]+),.*?\n', re.MULTILINE)
-existing_entries = []
-for m in entry_line_re.finditer(orig_cpp):
-    h = int(m.group(1), 16)
-    existing_entries.append((h, m.group(0)))
-assert len(existing_entries) == 5849
-
-# 2. Parse test entries and re-base offsets
+# 1. Parse test entries first so merge is idempotent against a previously merged file
 entry_re = re.compile(r'^\t\{ (0x[0-9A-Fa-f]+), (\d+), (\d+), (\d+), (\d+), (0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), (\{ [^}]+ \}), (\{ [^}]+ \}), (\d+), (\d+), (\d+), (\d+), (0x[0-9A-Fa-f]+|\d+) \},$', re.MULTILINE)
 base_vi = 2397
 base_lit = 25579
 
 new_entries = []
+new_hashes = set()
 for m in entry_re.finditer(test_cpp):
     h = int(m.group(1), 16)
     vi_offset = int(m.group(11))
     vi_count = int(m.group(12))
     lit_offset = int(m.group(13))
     lit_count = int(m.group(14))
-    
+
     new_vi_offset = (vi_offset + base_vi) if vi_count > 0 else 0
     new_lit_offset = (lit_offset + base_lit) if lit_count > 0 else 0
-    
-    new_line = f'\t{{ {m.group(1)}, {m.group(2)}, {m.group(3)}, {m.group(4)}, {m.group(5)}, {m.group(6)}, {m.group(7)}, {m.group(8)}, {m.group(9)}, {m.group(10)}, {new_vi_offset}, {vi_count}, {new_lit_offset}, {lit_count}, {m.group(15)} }},\n'
+
+    new_line = f'\t{{ {m.group(1)}, 0, 0, 0, 0, {m.group(6)}, {m.group(7)}, {m.group(8)}, {m.group(9)}, {m.group(10)}, {new_vi_offset}, {vi_count}, {new_lit_offset}, {lit_count}, {m.group(15)} }},\n'
     new_entries.append((h, new_line))
+    new_hashes.add(h)
 assert len(new_entries) == 50
+
+# 2. Parse base entries (excluding test hashes if already merged)
+entry_line_re = re.compile(r'^\t\{ (0x[0-9A-Fa-f]+),.*?\n', re.MULTILINE)
+existing_entries = []
+for m in entry_line_re.finditer(orig_cpp):
+    h = int(m.group(1), 16)
+    if h not in new_hashes:
+        existing_entries.append((h, m.group(0)))
+assert len(existing_entries) == 5849
 
 all_entries = existing_entries + new_entries
 all_entries.sort(key=lambda x: x[0])
@@ -47,7 +50,8 @@ orig_vi_match = re.search(r'ShaderVertexInput g_shaderVertexInputs\[\] = \{(.*?)
 orig_vi_lines = [l.strip() for l in orig_vi_match.group(1).strip().splitlines() if l.strip()]
 assert orig_vi_lines[-1] == '{ 0, 0, 0, 0, 0, 0, 0 },'
 active_orig_vi = orig_vi_lines[:-1]
-assert len(active_orig_vi) == base_vi
+assert len(active_orig_vi) in (base_vi, base_vi + 60)
+active_orig_vi = active_orig_vi[:base_vi]
 
 test_vi_match = re.search(r'ShaderVertexInput g_shaderVertexInputs\[\] = \{(.*?)\};', test_cpp, re.DOTALL)
 test_vi_lines = [l.strip() for l in test_vi_match.group(1).strip().splitlines() if l.strip()]
@@ -62,7 +66,8 @@ orig_lit_match = re.search(r'ShaderLiteral g_shaderLiterals\[\] = \{(.*?)\};', o
 orig_lit_lines = [l.strip() for l in orig_lit_match.group(1).strip().splitlines() if l.strip()]
 assert orig_lit_lines[-1] == '{ 0, { 0, 0, 0, 0 } },'
 active_orig_lit = orig_lit_lines[:-1]
-assert len(active_orig_lit) == base_lit
+assert len(active_orig_lit) in (base_lit, base_lit + 268)
+active_orig_lit = active_orig_lit[:base_lit]
 
 test_lit_match = re.search(r'ShaderLiteral g_shaderLiterals\[\] = \{(.*?)\};', test_cpp, re.DOTALL)
 test_lit_lines = [l.strip() for l in test_lit_match.group(1).strip().splitlines() if l.strip()]
