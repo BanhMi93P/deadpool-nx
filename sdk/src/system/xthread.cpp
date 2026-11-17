@@ -93,6 +93,12 @@ thread_local uint8_t t_guest_kind = 0;
 } // namespace
 #endif
 
+// renut-ultimate (2026-11-16, port 144; tw2de_nx's rex_spin_hint of 2026-10-22): the Xenon's spin-wait hints with the
+// codegen option spin_hint_yield (off by default; rex/ppc/context.h). The base's yield: on the Switch MaybeYield, whose
+// backoff (switch_yield_backoff) turns a long run of them into short sleeps, so a spinning thread gives its core to the
+// one it waits for.
+extern "C" void rex_spin_hint(void) { rex::thread::MaybeYield(); }
+
 namespace rex::system {
 
 const uint32_t XAPC::kSize;
@@ -896,9 +902,18 @@ void XThread::DeliverAPCs() {
   auto kthread = guest_object<X_KTHREAD>();
   auto *dispatcher = kernel_state_->function_dispatcher();
 
-  auto old_irql =
-      kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
-  auto &user_apc_queue = kthread->apc_lists[1];
+  // blur-nx (2026-11-16, the 15 ms batch, #171): every alertable wait calls this twice, almost always with nothing
+  // queued, and the guest spinlock (an interlocked loop on the KTHREAD plus the PCR's IRQL bookkeeping, twice) was
+  // taken just to see that. An empty queue is now seen by one read of its head's forward link first. Exact: a read
+  // that sees it empty is the same as taking the lock just before another thread queues an APC (the queueing thread
+  // holds the lock while it links the entry, and the link word changes in one aligned store); one that sees an entry
+  // takes the locked path below, which checks again.
+  if (kthread->apc_lists[1].empty(mem)) {
+    return;
+  }
+
+  auto old_irql = kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &kthread->apc_lock);
+  auto& user_apc_queue = kthread->apc_lists[1];
 
   while (!user_apc_queue.empty(mem) && kthread->apc_disable_count == 0) {
     PERF_counter_inc(kApcQueueDepth);

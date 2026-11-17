@@ -8,6 +8,8 @@
 #include "renut_engine/gpu/d3d/d3d_native.h"  // banjo-nx (2026-10-26): g_touch_compare
 #include "renut_engine/gpu/backend/queued.h"
 #include "renut_engine/gpu/render/draw.h"
+#include "renut_engine/gpu/render/textures.h"  // blur-nx (2026-11-17, audit #4/#5): ResolveRemakeReport
+#include "renut_engine/gpu/stage_census.h"  // blur-nx (2026-11-17, audit #17-#22, #30)
 #include "renut_engine/perf/frame_stats.h"  // blur-nx (2026-11-13): #37's census
 #include "renut_engine/gpu/render/graphics_options.h"  // banjo-nx (2026-10-28): dynamic resolution's ranges
 #include "renut_engine/gpu/guest/command_buffers.h"  // banjo-nx (2026-10-26): TagsReport
@@ -432,6 +434,13 @@ REXCVAR_DEFINE_BOOL(banjo_deko3d_push_constants_verify, false, "Banjo/Diagnostic
                     "banjo_deko3d_push_constants: after every draw's updates, checks that the model of the uniform "
                     "buffers holds the guest's value of every register the shaders read (and their literals), and "
                     "logs a draw where it does not (a test: slower)");
+// renut-ultimate (2026-11-16, port 145; tw2de_nx's tw2de_async_present of 2026-11-13, ON at the user's word: "port the
+// speed ups as on by default"). Read by name in sdk/src/ui/switch_perf.cpp at the first present.
+REXCVAR_DEFINE_BOOL(banjo_async_present, true, "Banjo/Enhancements",
+                    "Switch (tw2de_nx): the window's two binder calls of a present (queue the image, dequeue the next "
+                    "one: 2.7 ms a frame in tw2de_nx's heaviest stretch) are made by a helper thread, so the renderer's "
+                    "feed thread records the next frame instead of waiting for the compositor's answers. The same calls "
+                    "in the same order. false: on the presenting thread, as before");
 REXCVAR_DEFINE_BOOL(banjo_deko3d_kick_submit, true, "Banjo/Enhancements",
                     "deko3d renderer (2026-10-19, input latency): at the game's kicks (several a frame) the command "
                     "list recorded so far is ended and handed to the GPU at the next kick, instead of the whole frame "
@@ -1328,6 +1337,49 @@ void ReportDetailedPerfAndWorkload(double since) {
 
 }  // namespace
 
+std::atomic<uint64_t> g_last_report_us{0};  // blur-nx (2026-11-17, audit #31): StatsGameFrame's report, its last time
+
+}  // namespace banjo::renut_gpu
+// blur-nx (2026-11-17, the Renut audit's #17-#22 and #30): gpu/stage_census.h.
+REXCVAR_DEFINE_BOOL(blur_renut_diag_stage_census, false, "Banjo/Diagnostics",
+                    "blur-nx (the Renut audit's census): the time the renderer spends in its stages (FastDrawLocked, "
+                    "DrawStateLocked, FillTextures, the constants, targets, pipeline, streams, uploads, resolves' "
+                    "setup, render-thread items, NewOp, BeginCommandBuffer's fence) in the 10 s report. Two clock reads "
+                    "and two atomics a stage when on")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+namespace renut::gpu::census {
+Acc g_acc[kStageCount];
+bool On() {
+  static const bool on = REXCVAR_GET(blur_renut_diag_stage_census);
+  return on;
+}
+std::string Report(double seconds) {
+  if (!On() || seconds <= 0.0)
+    return {};
+  static constexpr const char *kNames[kStageCount] = {
+      "FastDrawLocked", "DrawStateLocked", "FillTextures", "constants", "BindTargets", "setPipeline", "BindStreams",
+      "WholeGeometryTry", "host draw", "CardsProve", "Upload", "RefreshBindingLocked", "ResolveTargetsLocked",
+      "render items", "NewOp", "BeginCommandBuffer fence"};
+#if defined(__SWITCH__)
+  const double tick_ms = 1000.0 / double(armGetSystemTickFreq());
+#else
+  const double tick_ms = 1000.0 * double(std::chrono::steady_clock::period::num) /
+                         double(std::chrono::steady_clock::period::den);
+#endif
+  std::string line = "stages (blur_renut_diag_stage_census), ms a second and calls a second:";
+  for (uint32_t i = 0; i < kStageCount; ++i) {
+    const uint64_t ticks = g_acc[i].ticks.exchange(0, std::memory_order_relaxed);
+    const uint64_t n = g_acc[i].n.exchange(0, std::memory_order_relaxed);
+    if (!n)
+      continue;
+    line += fmt::format(" {} {:.2f} ms/s ({:.0f}/s, {:.2f} us each);", kNames[i], double(ticks) * tick_ms / seconds,
+                        double(n) / seconds, double(ticks) * tick_ms * 1000.0 / double(n));
+  }
+  return line;
+}
+}  // namespace renut::gpu::census
+namespace banjo::renut_gpu {
+
 void StatsGameFrame() {
   const auto now = std::chrono::steady_clock::now();
   std::lock_guard lock(g_stats.mutex);
@@ -1371,6 +1423,18 @@ void StatsGameFrame() {
   const double since = std::chrono::duration<double>(now - g_stats.last_report).count();
   if (since < 10.0)
     return;
+  // blur-nx (2026-11-17, the Renut audit's #31, a census): this report is built on the game thread at its Swap (the
+  // Game Master in Blur), under g_stats.mutex; how long it takes is logged at its end (the next report says the last).
+  struct ReportClock {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~ReportClock() {
+      g_last_report_us.store(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - start).count()),
+                             std::memory_order_relaxed);
+    }
+  } report_clock;
+  if (const uint64_t us = g_last_report_us.load(std::memory_order_relaxed))
+    REXLOG_INFO("[renut] the last 10 s report took {:.2f} ms on the game thread (blur-nx audit #31)", double(us) / 1000.0);
   BanjoTlbTestTick();
   // banjo-nx (2026-10-22): the native copies' report (app/src/cpu/banjo_hot_guest.cpp) comes with this one: without
   // a guard (direct dispatch) no hook calls it any more.
@@ -1437,6 +1501,12 @@ void StatsGameFrame() {
     REXLOG_INFO("[renut] {}", dk);
   if (const std::string ss = ::renut::gpu::StateSourceReport(); !ss.empty())  // banjo-nx (2026-10-26)
     REXLOG_INFO("[renut] {}", ss);
+  if (const std::string rl = ::renut::gpu::RecordLockReport(); !rl.empty())  // blur-nx (2026-11-17)
+    REXLOG_INFO("[renut] {}", rl);
+  if (const std::string rr = ::renut::gpu::ResolveRemakeReport(); !rr.empty())  // blur-nx (2026-11-17, audit #4/#5)
+    REXLOG_INFO("[renut] {}", rr);
+  if (const std::string st = ::renut::gpu::census::Report(since); !st.empty())  // blur-nx (2026-11-17, audit #17)
+    REXLOG_INFO("[renut] {}", st);
   if (const std::string rc = ::renut::gpu::ReplayRepeatCensusReport(); !rc.empty())  // banjo-nx (2026-10-26)
     REXLOG_INFO("[renut] {}", rc);
   if (const std::string pc = ::renut::gpu::PacketCensusReport(); !pc.empty())  // banjo-nx (2026-10-28)

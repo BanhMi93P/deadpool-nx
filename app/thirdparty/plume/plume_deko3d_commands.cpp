@@ -2270,10 +2270,17 @@ namespace plume {
 
     Deko3DSwapChain::~Deko3DSwapChain() { destroy(); }
 
+    }  // namespace plume
+    extern "C" void RexSwitchPerfPresentQuiesce(NWindow *nw);  // sdk/src/ui/switch_perf.cpp (port 145)
+    namespace plume {
+
     void Deko3DSwapChain::destroy() {
         if (!swapchain)
             return;
         dkQueueWaitIdle(device->queue);
+        // renut-ultimate (2026-11-16, port 145; tw2de_nx's, banjo_async_present): the buffer dequeued ahead goes back
+        // first (libnx does not release the window's buffers while one is dequeued).
+        RexSwitchPerfPresentQuiesce(desc.renderWindow ? desc.renderWindow : nwindowGetDefault());
         dkSwapchainDestroy(swapchain);
         swapchain = nullptr;
         textures.clear();

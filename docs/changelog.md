@@ -182,7 +182,7 @@ Ports 1-43 are the first round: the universal fixes of the other ports' renderer
   bit-exact for scalar denormals; Blur's console +4.6 % fps), and its census.
 - Port 124 (from blur-nx) counts every promoted call target as address-taken in leaf_dead_stores.
 - Port 125 (from blur-nx) turns the user clip slot off for pipelines that write no clip distance (Renut's host
-  passes on deko3d; Blur's black band).
+  passes on deko3d; not Blur's black band, which is its race intro: port 154).
 - Port 126 adds tools/switch_remote.py (sys-botbase and sys-ftpd-light, the port's own SD folder only, no delete)
   and the porting guide's appendices on the console and RenderDoc.
 - Port 127 (from blur-nx) keeps the console's EDRAM tricks working when `msaa_level` lowers a target's samples
@@ -213,3 +213,29 @@ Ports 1-43 are the first round: the universal fixes of the other ports' renderer
 - Port 140 (from blur-nx) adds the near-exact switches (off) with their censuses, store cards by the copies'
   rule, and leaves out FPSCR writes that change nothing.
 - Port 141 (from blur-nx) makes the guard take a NaN that differs only in its sign as the same.
+- Port 142 removes `kernel_timestamp_timer_on_import` (port 139's M-38) at the user's word: the timestamp
+  timer runs from start-up again in every game.
+- Port 143 (from tw2de_nx) drops Xenia's 100 ms wait on saves and dialogs (with the event reset it needs) and
+  throttles XMP polling; whole 64-bit arguments, the disc swap's event and the scatter read are off.
+- Port 144 (from tw2de_nx) yields at the Xenon's spin hints and unpacks NORMSHORT2 with NEON; its exact FPU and
+  VMX forms, the 360's estimate tables, exact_fp and the missing instructions are off by default.
+- Port 145 (from tw2de_nx) redeems quiet vertex streams, keeps unused render targets, uploads only the written
+  rows of dynamic textures, uses the GPU's 16-bit formats and presents from a helper thread.
+- Port 146 (from tw2de_nx) releases mutants without their mutex when nobody waits and reads files in 4 MB
+  pieces, host buffers directly.
+- Port 147 (from tw2de_nx) adds the PowerPC instruction test NRO (Xenia's hardware-recorded tests) and the
+  console's time zone (off).
+- Port 148 (from blur-nx) takes Renut's recorded binds, its per-draw lookups and its record lock off the
+  frame jobs' path, scans only the changed chunks for set words and adds the Renut audit's CPU batch
+  (Blur's console: +3.5, +0.5 and +0.4 fps).
+- Port 149 (from blur-nx) never leaves a sample-grid resolve in the view's image (the colour hand-over).
+- Port 150 (from blur-nx) caches each indirect call site's target, loads doubles in the vector unit, drops the
+  barriers of counted loops and gives the guest compare-and-swap and fences the PowerPC's orderings
+  (acquire in a game with isync); the ABI-trust copies are off.
+- Port 151 (from blur-nx) gives small C++ allocations per-thread free lists on the Switch (32 MB arena).
+- Port 152 (from blur-nx) skips the APC lock on an empty queue and adds the startup-notification option,
+  Sphaira's forwarder ids, the guard's keep list and the audio pump's frames (off).
+- Port 153 (from blur-nx) lists the blocked guest waits in the stall watchdog's dumps and adds the profiler's
+  interval, call-count switch and audout counters, and deko3d's crash breadcrumbs.
+- Port 154 (from blur-nx) adds its census, signature, crash-report and RenderDoc tools, and corrects ports
+  125 and 145.
