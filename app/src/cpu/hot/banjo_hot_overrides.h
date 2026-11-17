@@ -23,6 +23,8 @@
 REXCVAR_DECLARE(bool, banjo_native_fmod_reverb);
 REXCVAR_DECLARE(bool, banjo_native_fmod_reverb_verify);
 
+REX_EXTERN(sub_82D5F7A8);
+
 namespace banjo::hand::n_82D60CB8 {
 
 struct ReverbBuffers {
@@ -79,26 +81,6 @@ inline bool Validate(uint8_t* base, const PPCContext& ctx, ReverbBuffers& b) {
 
   const uint8_t* ps = ::banjo::hot::Raw(base, b.self);
   if (int32_t(Load32P(ps + 720u)) != 8) [[unlikely]] return false;
-
-  // Decline if any smoothed parameter has pending changes (target != current).
-  if (!(audio_filter::LoadF(ps + 660u) == audio_filter::LoadF(ps + 676u)) ||
-      !(audio_filter::LoadF(ps + 656u) == audio_filter::LoadF(ps + 692u)) ||
-      !(audio_filter::LoadF(ps + 16u) == audio_filter::LoadF(ps + 32u)) ||
-      !(audio_filter::LoadF(ps + 636u) == audio_filter::LoadF(ps + 652u)) ||
-      !(audio_filter::LoadF(ps + 696u) == audio_filter::LoadF(ps + 712u))) [[unlikely]]
-    return false;
-  for (uint32_t i = 0; i < 9u; ++i) {
-    if (Load32P(ps + 1128u + 4u * i) != Load32P(ps + 1164u + 4u * i)) [[unlikely]]
-      return false;
-  }
-  for (uint32_t t = 0; t < 8u; ++t) {
-    if (Load32P(ps + 788u + 4u * t) != Load32P(ps + 820u + 4u * t)) [[unlikely]]
-      return false;
-    if (!(audio_filter::LoadF(ps + 508u + 4u * t) == audio_filter::LoadF(ps + 572u + 4u * t))) [[unlikely]]
-      return false;
-    if (!(audio_filter::LoadF(ps + 76u + 4u * t) == audio_filter::LoadF(ps + 212u + 4u * t))) [[unlikely]]
-      return false;
-  }
 
   b.mono_addr = Load32P(ps + 4u);
   b.vec_a_addr = Load32P(ps + 500u);
@@ -323,6 +305,14 @@ inline bool TryRun(PPCContext& __restrict ctx, uint8_t* base) {
   // Stage 1 & 2: Anti-denormal DC flip-flop + channel-to-mono downmix.
   AddAntiDenormalDC(p_in, b.ch, b.nsamples);
   DownmixToMono(p_in, p_mono, b.ch, b.nsamples);
+
+  // Update smoothed parameter ramps via guest's parameter updater
+  PPCContext fmod_ctx = ctx;
+  fmod_ctx.r3.u32 = b.self;
+  fmod_ctx.r4.u32 = b.nsamples;
+  fmod_ctx.r5.u32 = b.ch;
+  fmod_ctx.r6.u32 = b.in_addr;
+  sub_82D5F7A8(fmod_ctx, base);
 
   // Stage 3a: Synchronize clean pre-loop state and flags (mirrors loc_82D60F50..loc_82D61194).
   ctx.fpscr.disableFlushMode();
@@ -620,6 +610,7 @@ inline bool TryRun(PPCContext& __restrict ctx, uint8_t* base) {
     audio_filter::StoreF(p_vec_b + 80u + 4u * k, last_w1[k]);
   }
 #endif
+  ctx.r3.u64 = 0;
   return true;
 }
 
