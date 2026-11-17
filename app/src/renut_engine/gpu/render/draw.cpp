@@ -4457,8 +4457,6 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
   // banjo-nx (2026-10-28): banjo_renut_texture_slot_skip, not in the verify forms (they compare the whole way's words).
   const bool slot_skip = slot_fx && slot_fx == g_skip_fx && TextureSlotSkipOn() && !objects_verify &&
                          !PersistentSharedVerifyOn();
-  u32 slot_va[d3d::kTextureFetchSlots];
-  bool slot_last_dev_same[d3d::kTextureFetchSlots];
   for (u32 bits = fetch_mask; bits; bits &= bits - 1) {
     const u32 r = u32(std::countr_zero(bits));
     if (!draw_fetches) {
@@ -4468,23 +4466,16 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
       if (filters) [[unlikely]]  // port 145
         slots.f[r].dword[3] = filters->Apply(r, slots.f[r].dword[3]);
     }
-    const u32 va = ((in_va_mask >> r) & 1) ? in_va[r] : SlotTextureVa(device, r);
-    slot_va[r] = va;
-    if (!va) {
-      slot_last_dev_same[r] = false;
+    const u32 va = SlotTextureVa(device, r);
+    if (!va)
       continue;
-    }
-    const SlotLast &last = g_slot_last[r];
     if (objs && ((objs->mask >> r) & 1)) {
-      slot_last_dev_same[r] = persistent && (last.obj == objs->slot[r] || last.valid) && last.va == va &&
-                              SameBytes<24>(last.device, fetches[r].dword);
       __builtin_prefetch(reinterpret_cast<const char *>(objs->slot[r]) + 64);
       __builtin_prefetch(reinterpret_cast<const char *>(objs->slot[r]) + 128);
       continue;
     }
-    const bool dev_same = persistent && last.va == va && SameBytes<24>(last.device, fetches[r].dword);
-    slot_last_dev_same[r] = dev_same;
-    if (last.valid && dev_same)
+    const SlotLast &last = g_slot_last[r];
+    if (persistent && last.valid && last.va == va && SameBytes<24>(last.device, fetches[r].dword))
       continue;  // banjo-nx (2026-10-26): answered by the slot's last (most likely)
     const TextureSlotMemo &m = TextureMemoSlot(va, fetches[r]);
     if (m.va == va && m.fx.transition[0])
@@ -4493,19 +4484,14 @@ void FillTextures(const GuestDevice &device, u32 fetch_mask, SharedConstants &sc
   for (u32 bits = fetch_mask; bits; bits &= bits - 1) {
     const u32 r = u32(std::countr_zero(bits));
     const TextureFetch &fetch = fetches[r];
-    const u32 texture_va = slot_va[r];
+    const u32 texture_va = SlotTextureVa(device, r);
     const auto *header = SlotHeader(texture_va);  // sasrt-nx (2026-10-29, sasrt_renut_texture_memo_fetch_only)
-    if (out_va)
-      out_va[r] = texture_va;
-    if (out_header)
-      out_header[r] = header;
     const bool memo = banjo::renut_gpu::CpuMemosOn() && header;
     if (all_memo && !memo)
       *all_memo = false;
     SlotLast &last = g_slot_last[r];
-    const bool last_dev_same =
-        persistent ? (texture_va ? slot_last_dev_same[r] : (last.va == 0 && SameBytes<24>(last.device, fetch.dword)))
-                   : false;
+    const bool last_dev_same = persistent && last.valid && last.va == texture_va &&
+                               SameBytes<24>(last.device, fetch.dword);
     // banjo-nx (2026-10-27, Phase A): the slot's texture object's answer (no guest header, no memo, no epoch buckets
     // while the binding generation holds).
     // (The record made it from this slot's address word, which the op's chunks give the device here: its identity line
@@ -11085,8 +11071,6 @@ int FastDrawLocked(const u8 *device_state, const DrawCall &call, const ReplayCon
   const bool check_index = exports_pending && call.indexed && (!export_generation_same || !f.export_index_ok ||
                                                                (fields & kFieldIndex));
   const bool check_textures = exports_pending && (!export_generation_same || !f.export_textures_ok || textures_inputs);
-  u32 pre_va[d3d::kTextureFetchSlots];
-  u32 pre_va_mask = 0;
   if (textures_inputs || check_textures || verify) {
     for (u32 bits = texture_mask; bits; bits &= bits - 1) {
       const u32 r = u32(std::countr_zero(bits));
@@ -11098,8 +11082,6 @@ int FastDrawLocked(const u8 *device_state, const DrawCall &call, const ReplayCon
         __builtin_prefetch(reinterpret_cast<const char *>(g_draw_resources->slot[r]) + 128);
       } else if (textures_inputs && r < d3d::kTextureFetchSlots) {
         const u32 va = SlotTextureVa(device, r);
-        pre_va[r] = va;
-        pre_va_mask |= 1u << r;
         if (const auto *header = va ? GuestPtr<const d3d::BaseTexture>(va) : nullptr)
           __builtin_prefetch(&header->Format);
         const TextureSlotMemo &m = TextureMemoSlot(va, fetches[r]);
@@ -11186,23 +11168,19 @@ int FastDrawLocked(const u8 *device_state, const DrawCall &call, const ReplayCon
     f.fx_float_sampled = f.fx_words_viewed = 0;
     f.layout_epoch = g_layout_epoch;
   } else if (textures_inputs) {
-    textures_refilled = true;
     bool all_memo = false;
-    u32 filled_va[d3d::kTextureFetchSlots];
-    const d3d::BaseTexture *filled_header[d3d::kTextureFetchSlots];
     g_handover_targets = &targets;
-    FillTextures(device, texture_mask, sc, f.fx, &all_memo, fetches, nullptr, pre_va, pre_va_mask, filled_va,
-                 filled_header);
+    FillTextures(device, texture_mask, sc, f.fx, &all_memo, fetches, nullptr);
     g_handover_targets = nullptr;
     f.textures_valid = all_memo;
     for (u32 bits = texture_mask & ((1u << d3d::kTextureFetchSlots) - 1u); bits && all_memo; bits &= bits - 1) {
       const u32 r = u32(std::countr_zero(bits));
-      const u32 va = filled_va[r];
+      const u32 va = SlotTextureVa(device, r);
       f.texture_va[r] = va;
       f.texture_obj[r] = tex_objects ? g_draw_resources->slot[r] : nullptr;  // banjo-nx (2026-10-27, Phase A)
       if (tex_objects)
         continue;  // (the objects stand for the headers: below)
-      const auto *header = filled_header[r];  // sasrt-nx (2026-10-29)
+      const auto *header = SlotHeader(va);  // sasrt-nx (2026-10-29)
       if (header)
         std::memcpy(f.texture_header[r], &header->Format, sizeof(f.texture_header[r]));
       else
