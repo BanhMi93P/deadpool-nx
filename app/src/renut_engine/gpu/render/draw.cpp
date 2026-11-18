@@ -2555,11 +2555,129 @@ bool BindTargets(const Targets &t, bool depth_writes = true) {
 // glass and car paint read: its alpha is the clear's (and, over the tiles the panorama drew, the panorama's). A draw that
 // writes every channel without blending takes nothing (it covers what it draws; the rest stays as before this key).
 // Called by both draw paths before BindTargets; the draw's own binds follow (g_bound is reset).
+bool InheritEdramSurfaceLocked(HostSurface *target) {
+  if (!banjo::renut_gpu::EdramInheritOn() || !target || target->depth || !target->texture ||
+      g_blur_color_write_last <= target->write_seq || g_blur_color_write_last <= target->blur_inherit_checked)
+    return false;
+  auto &s = State();
+  static std::vector<HostSurface *> sources;
+  target->blur_inherit_checked = g_blur_color_write_last;
+  u32 skipped = 0;
+  EdramInheritSourcesLocked(target, sources, skipped);
+  if (skipped) {
+    static u32 logged = 0;
+    if (LogLimited(logged, 8))
+      RGPU_WARN("[renut] {}x{} target (EDRAM format {}) kept in part: {} other view(s) wrote its EDRAM since, of another "
+                "format or scale: not taken (blur_renut_edram_inherit)", target->width, target->height,
+                (u32(target->color_info_word) >> 16) & 0xF, skipped);
+  }
+  if (sources.empty())
+    return false;
+  u32 dst_bits = 0, dst_rows = 0;
+  if (!EdramInheritSpanLocked(target, dst_bits, dst_rows))
+    return false;
+  const bool dst_ms = target->samples != plume::RenderSampleCount::COUNT_1;
+  // renut-ultimate: a resolve handed over in this target's image is drawn out first; the copy writes the image.
+  if (target->handed)
+    DepthHandOverBeforeBindLocked(target, nullptr, 0);
+  HostSurface *const colors[] = {target};
+  plume::RenderFramebuffer *framebuffer = GetFramebufferLocked(colors, 1, nullptr);
+  if (!framebuffer)
+    return false;
+  u32 taken = 0;
+  for (HostSurface *source : sources) {
+    u32 src_bits = 0, src_rows = 0;
+    if (!EdramInheritSpanLocked(source, src_bits, src_rows))
+      continue;
+    const bool src_ms = source->samples != plume::RenderSampleCount::COUNT_1;
+    plume::RenderShader *ps = src_ms ? (dst_ms ? s.edram_inherit_ms_ms_ps.get() : s.edram_inherit_src_ms_ps.get())
+                                     : (dst_ms ? s.edram_inherit_dst_ms_ps.get() : s.edram_inherit_ps.get());
+    const uint32_t source_slot = ps ? SurfaceSampleSlotLocked(source) : kInvalidDescriptor;
+    if (source_slot == kInvalidDescriptor)
+      continue;
+    auto &pipeline = s.edram_inherit_pipelines[uint32_t(target->format) | (uint32_t(target->samples) << 20) |
+                                               (src_ms ? 0x80000000u : 0u)];
+    if (!pipeline) {
+      plume::RenderGraphicsPipelineDesc desc;
+      desc.pipelineLayout = s.utility_layout.get();
+      desc.vertexShader = s.present_vs.get();
+      desc.pixelShader = ps;
+      desc.multisampling = plume::RenderMultisampling(plume::RenderSampleCounts(target->samples));
+      desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+      desc.cullMode = plume::RenderCullMode::NONE;
+      desc.renderTargetCount = 1;
+      desc.renderTargetFormat[0] = target->format;
+      desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
+      desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
+      pipeline = s.device->createGraphicsPipeline(desc);
+      if (!pipeline)
+        continue;
+      pipeline->setName("renut edram inherit");
+    }
+    plume::RenderCommandList *cmd = s.command_list;
+    TransitionSurfaceLocked(source, plume::RenderTextureLayout::SHADER_READ);
+    TransitionSurfaceLocked(target, plume::RenderTextureLayout::COLOR_WRITE);
+    cmd->setFramebuffer(framebuffer);
+    g_bound.framebuffer = framebuffer;
+    cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(target->width), float(target->height)));
+    cmd->setScissors(plume::RenderRect(0, 0, int32_t(target->width), int32_t(target->height)));
+    cmd->setGraphicsPipelineLayout(s.utility_layout.get());
+    cmd->setPipeline(pipeline.get());
+    cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
+    cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
+    UtilityPush push{};
+    std::memcpy(&push.scale[0], &dst_bits, 4);
+    std::memcpy(&push.scale[1], &src_bits, 4);
+    const u32 src_w = source->width, src_h = source->height;
+    std::memcpy(&push.translate[0], &src_w, 4);
+    std::memcpy(&push.translate[1], &src_h, 4);
+    std::memcpy(&push.param0, &src_rows, 4);
+    // blur-nx (2026-11-13, MSAA lowered): the host targets' sample counts (edram_inherit.hlsli): a 4x view made 2x by
+    // msaa_level read sample indices 2 and 3 of a 2-sample image (nothing there).
+    const u32 host_samples = (u32(target->samples) & 0xFu) | ((u32(source->samples) & 0xFu) << 4);
+    std::memcpy(&push.param1, &host_samples, 4);
+    push.texture_index = source_slot;
+    push.sampler_index = kPointClampSamplerSlot;
+#if defined(PLUME_DEKO3D)
+    // renut-ultimate (port 76, not in blur-nx): the multisampled source forms' deko3d shaders read the source as a
+    // BOUND texture (binding 0: tools/deko3d_glsl.py makes a host shader's bindless Texture2DMS dk_ms_b0), as the depth
+    // resolve's multisampled variant does (katamari-nx: Ryujinx cannot follow a bindless multisampled fetch).
+    // Without it they read whatever binding 0 last held.
+    if (src_ms && IsDeko3D())
+      plume::Deko3DBindFragmentTextures(cmd, 0, &source_slot, 1);
+#endif
+    cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+    cmd->drawInstanced(3, 1, 0, 0);
+    ++taken;
+    static u32 logged = 0;
+    if (LogLimited(logged, 16))
+      RGPU_INFO("[renut] {}x{} {}x target (base {:03X}, EDRAM format {}) kept in part takes what a {}x{} {}x view wrote "
+                "over its tiles since (base {:03X}; blur_renut_edram_inherit)", target->width, target->height,
+                u32(target->samples), u32(target->color_info_word) & 0xFFF, (u32(target->color_info_word) >> 16) & 0xF,
+                source->width, source->height, u32(source->samples), u32(source->color_info_word) & 0xFFF);
+  }
+  if (!taken)
+    return false;
+  static uint64_t total = 0;  // how often: a copy of the target each time (logged as the count passes a power of two)
+  const uint64_t before = total;
+  total += taken;
+  if (std::bit_width(before) != std::bit_width(total))
+    RGPU_INFO("[renut] blur_renut_edram_inherit: {} copies so far", total);
+  ++target->writes;  // banjo-nx (banjo_renut_resolve_skip): it holds other pixels now
+  target->write_seq = ++g_surface_write_seq;
+  g_blur_color_write_last = target->write_seq;
+  target->blur_inherit_checked = g_blur_color_write_last;
+  // The draw path binds its own layout, pipeline, targets and viewport again.
+  g_bound.framebuffer = nullptr;
+  g_bound.pipeline = nullptr;
+  g_bound.layout = false;
+  g_bound.viewport_set = false;
+  return true;
+}
+
 void InheritEdramBeforeDrawLocked(const Targets &t, u32 color_mask, const u32 *blend_control) {
   if (!t.color_count || !banjo::renut_gpu::EdramInheritOn())
     return;
-  auto &s = State();
-  static std::vector<HostSurface *> sources;
   for (u32 i = 0; i < t.color_count; ++i) {
     HostSurface *target = t.colors[i];
     // Nothing written to any colour target since this one's last write or look: nothing to take (the common case, O(1)).
@@ -2573,117 +2691,7 @@ void InheritEdramBeforeDrawLocked(const Targets &t, u32 color_mask, const u32 *b
     const u32 every = edram_format == 14 ? 0x1u : (edram_format == 4 || edram_format == 6 || edram_format == 15) ? 0x3u : 0xFu;
     if (!mask || ((mask & every) == every && !blended))
       continue;  // writes nothing, or every channel without reading the target: looked at again by a draw that keeps
-    target->blur_inherit_checked = g_blur_color_write_last;
-    u32 skipped = 0;
-    EdramInheritSourcesLocked(target, sources, skipped);
-    if (skipped) {
-      static u32 logged = 0;
-      if (LogLimited(logged, 8))
-        RGPU_WARN("[renut] {}x{} target (EDRAM format {}) kept in part: {} other view(s) wrote its EDRAM since, of another "
-                  "format or scale: not taken (blur_renut_edram_inherit)", target->width, target->height,
-                  (u32(target->color_info_word) >> 16) & 0xF, skipped);
-    }
-    if (sources.empty())
-      continue;
-    u32 dst_bits = 0, dst_rows = 0;
-    if (!EdramInheritSpanLocked(target, dst_bits, dst_rows))
-      continue;
-    const bool dst_ms = target->samples != plume::RenderSampleCount::COUNT_1;
-    // renut-ultimate: a resolve handed over in this target's image is drawn out first; the copy writes the image.
-    if (target->handed)
-      DepthHandOverBeforeBindLocked(target, nullptr, 0);
-    HostSurface *const colors[] = {target};
-    plume::RenderFramebuffer *framebuffer = GetFramebufferLocked(colors, 1, nullptr);
-    if (!framebuffer)
-      continue;
-    u32 taken = 0;
-    for (HostSurface *source : sources) {
-      u32 src_bits = 0, src_rows = 0;
-      if (!EdramInheritSpanLocked(source, src_bits, src_rows))
-        continue;
-      const bool src_ms = source->samples != plume::RenderSampleCount::COUNT_1;
-      plume::RenderShader *ps = src_ms ? (dst_ms ? s.edram_inherit_ms_ms_ps.get() : s.edram_inherit_src_ms_ps.get())
-                                       : (dst_ms ? s.edram_inherit_dst_ms_ps.get() : s.edram_inherit_ps.get());
-      const uint32_t source_slot = ps ? SurfaceSampleSlotLocked(source) : kInvalidDescriptor;
-      if (source_slot == kInvalidDescriptor)
-        continue;
-      auto &pipeline = s.edram_inherit_pipelines[uint32_t(target->format) | (uint32_t(target->samples) << 20) |
-                                                 (src_ms ? 0x80000000u : 0u)];
-      if (!pipeline) {
-        plume::RenderGraphicsPipelineDesc desc;
-        desc.pipelineLayout = s.utility_layout.get();
-        desc.vertexShader = s.present_vs.get();
-        desc.pixelShader = ps;
-        desc.multisampling = plume::RenderMultisampling(plume::RenderSampleCounts(target->samples));
-        desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
-        desc.cullMode = plume::RenderCullMode::NONE;
-        desc.renderTargetCount = 1;
-        desc.renderTargetFormat[0] = target->format;
-        desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
-        desc.depthTargetFormat = plume::RenderFormat::UNKNOWN;
-        pipeline = s.device->createGraphicsPipeline(desc);
-        if (!pipeline)
-          continue;
-        pipeline->setName("renut edram inherit");
-      }
-      plume::RenderCommandList *cmd = s.command_list;
-      TransitionSurfaceLocked(source, plume::RenderTextureLayout::SHADER_READ);
-      TransitionSurfaceLocked(target, plume::RenderTextureLayout::COLOR_WRITE);
-      cmd->setFramebuffer(framebuffer);
-      g_bound.framebuffer = framebuffer;
-      cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(target->width), float(target->height)));
-      cmd->setScissors(plume::RenderRect(0, 0, int32_t(target->width), int32_t(target->height)));
-      cmd->setGraphicsPipelineLayout(s.utility_layout.get());
-      cmd->setPipeline(pipeline.get());
-      cmd->setGraphicsDescriptorSet(s.texture_set.get(), 0);
-      cmd->setGraphicsDescriptorSet(s.sampler_set.get(), 1);
-      UtilityPush push{};
-      std::memcpy(&push.scale[0], &dst_bits, 4);
-      std::memcpy(&push.scale[1], &src_bits, 4);
-      const u32 src_w = source->width, src_h = source->height;
-      std::memcpy(&push.translate[0], &src_w, 4);
-      std::memcpy(&push.translate[1], &src_h, 4);
-      std::memcpy(&push.param0, &src_rows, 4);
-      // blur-nx (2026-11-13, MSAA lowered): the host targets' sample counts (edram_inherit.hlsli): a 4x view made 2x by
-      // msaa_level read sample indices 2 and 3 of a 2-sample image (nothing there).
-      const u32 host_samples = (u32(target->samples) & 0xFu) | ((u32(source->samples) & 0xFu) << 4);
-      std::memcpy(&push.param1, &host_samples, 4);
-      push.texture_index = source_slot;
-      push.sampler_index = kPointClampSamplerSlot;
-#if defined(PLUME_DEKO3D)
-      // renut-ultimate (port 76, not in blur-nx): the multisampled source forms' deko3d shaders read the source as a
-      // BOUND texture (binding 0: tools/deko3d_glsl.py makes a host shader's bindless Texture2DMS dk_ms_b0), as the depth
-      // resolve's multisampled variant does (katamari-nx: Ryujinx cannot follow a bindless multisampled fetch).
-      // Without it they read whatever binding 0 last held.
-      if (src_ms && IsDeko3D())
-        plume::Deko3DBindFragmentTextures(cmd, 0, &source_slot, 1);
-#endif
-      cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
-      cmd->drawInstanced(3, 1, 0, 0);
-      ++taken;
-      static u32 logged = 0;
-      if (LogLimited(logged, 16))
-        RGPU_INFO("[renut] {}x{} {}x target (base {:03X}, EDRAM format {}) kept in part takes what a {}x{} {}x view wrote "
-                  "over its tiles since (base {:03X}; blur_renut_edram_inherit)", target->width, target->height,
-                  u32(target->samples), u32(target->color_info_word) & 0xFFF, (u32(target->color_info_word) >> 16) & 0xF,
-                  source->width, source->height, u32(source->samples), u32(source->color_info_word) & 0xFFF);
-    }
-    if (taken) {
-      static uint64_t total = 0;  // how often: a copy of the target each time (logged as the count passes a power of two)
-      const uint64_t before = total;
-      total += taken;
-      if (std::bit_width(before) != std::bit_width(total))
-        RGPU_INFO("[renut] blur_renut_edram_inherit: {} copies so far", total);
-      ++target->writes;  // banjo-nx (banjo_renut_resolve_skip): it holds other pixels now
-      target->write_seq = ++g_surface_write_seq;
-      g_blur_color_write_last = target->write_seq;
-      target->blur_inherit_checked = g_blur_color_write_last;
-      // The draw path binds its own layout, pipeline, targets and viewport again.
-      g_bound.framebuffer = nullptr;
-      g_bound.pipeline = nullptr;
-      g_bound.layout = false;
-      g_bound.viewport_set = false;
-    }
+    InheritEdramSurfaceLocked(target);
   }
 }
 
@@ -15710,13 +15718,17 @@ void SyncColorViewLocked(HostSurface *surface) {
     if (alias->bound_serial > surface->bound_serial && (!latest || alias->bound_serial > latest->bound_serial))
       latest = alias;
   }
-  if (!latest || (surface->synced_view == latest && surface->synced_writes == latest->writes))
+  if (!latest || (surface->synced_view == latest && surface->synced_writes == latest->writes)) {
+    InheritEdramSurfaceLocked(surface);
     return;
+  }
   constexpr u32 kFormat2_10_10_10_Float_Edram = 0x3F, kFormat2_10_10_10_As_16 = 0x36;
   auto &s = State();
   if ((latest->format_word & 0x3F) != kFormat2_10_10_10_Float_Edram || (surface->format_word & 0x3F) != kFormat2_10_10_10_As_16 ||
       latest->samples != plume::RenderSampleCount::COUNT_1 || surface->samples != plume::RenderSampleCount::COUNT_1 ||
       !s.view_fp10_encode_ps) {
+    if (InheritEdramSurfaceLocked(surface))
+      return;
     static uint32_t logged = 0;
     if (LogLimited(logged, 8))
       RGPU_WARN("Resolve through a view of format {:02X} of EDRAM last drawn as {:02X}: its pixels are not carried over",

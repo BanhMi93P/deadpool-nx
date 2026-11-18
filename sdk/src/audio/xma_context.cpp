@@ -100,7 +100,7 @@ REXCVAR_DEFINE_BOOL(audio_xma_whole_buffer_loop, false, "Audio",
                     "frame past the buffer's last one (rc5: Beautiful Katamari's one-shot effects then loop forever). "
                     "false = it plays to the end of its input, as Xenia's decoder does (no frame starts at such an "
                     "end) and as the game expects");
-REXCVAR_DEFINE_BOOL(audio_xma_output_done_when_drained, false, "Audio",
+REXCVAR_DEFINE_BOOL(audio_xma_output_done_when_drained, true, "Audio",
                     "XMA: a pass that finds no input left, nothing pending and the output ring empty (the game took "
                     "every sample) clears output_buffer_valid, as Xenia clears it whenever the ring is empty after a "
                     "pass: the sound is done. false = only a pass that wrote PCM and filled the ring clears it "
@@ -1062,7 +1062,7 @@ void XmaContext::NoteStored(const uint8_t* context_ptr) {
 // audio_xma_kick_without_lock, OFF by default (the kick takes the lock, as before batch 4). The first batch-4 races
 // showed ~7 % more audio-engine CPU a second than batch 3's; whether this is why is measured with one NRO, both ways.
 // Work's exchange is right either way (under the lock, as the load and store it replaced).
-REXCVAR_DEFINE_BOOL(audio_xma_kick_without_lock, false, "Audio",
+REXCVAR_DEFINE_BOOL(audio_xma_kick_without_lock, true, "Audio",
                     "XMA: a kick (XMAEnableContext) sets the context's flag without its lock, so the game's audio thread "
                     "does not wait for a decode in progress (blur-nx batch 4). Read at the first kick");
 void XmaContext::Enable() {
@@ -1324,7 +1324,9 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
       // A header that starts here may continue in the next packet. Counting it
       // avoids marking the previous frame as the last one and skipping this one.
       // Decode will join both fragments to get its full size.
-      if (stream.BitsRemaining()) {
+      if (stream.BitsRemaining() &&
+          (!xma::IsPacketXma2Type(packet) ||
+           packet_info.frame_count_ < xma::GetPacketFrameCount(packet))) {
         if (stream.offset_bits() == frame_offset) {
           packet_info.current_frame_ = packet_info.frame_count_;
         }
@@ -1641,8 +1643,15 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
     combined.SetOffset(relative_offset - kBitsPerPacketHeader);
 
     uint64_t frame_size = combined.Peek(kBitsPerFrameHeader);
-    if (frame_size == xma::kMaxFrameLength) {
-      data->error_status = 4;
+    if (frame_size == 0 || frame_size == xma::kMaxFrameLength) {
+      if (frame_size == xma::kMaxFrameLength &&
+          kBitsPerPacket - relative_offset >= kBitsPerFrameHeader) {
+        data->error_status = 4;
+        return;
+      }
+      if (!LoopWholeBuffer(data, next_packet_index, current_input_packet_count)) {
+        AdvanceInputPacket(data, next_packet_index);
+      }
       return;
     }
     packet_info.current_frame_size_ = static_cast<uint32_t>(frame_size);
@@ -1656,7 +1665,9 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
 
   if (bits_to_copy == 0) {
     REXAPU_ERROR("XmaContext {}: There are no bits to copy!", id());
-    SwapInputBuffer(data);
+    if (!LoopWholeBuffer(data, next_packet_index, current_input_packet_count)) {
+      AdvanceInputPacket(data, next_packet_index);
+    }
     return;
   }
 

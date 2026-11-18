@@ -752,7 +752,7 @@ REXCVAR_DEFINE_BOOL(blur_renut_ms_slice_resolve, true, "Banjo/Renut",
 // (12x3 EDRAM tiles of 80x16, dark scrambled scene content), at first entry and after every attract fly-through; off
 // (alone or with ports 75-76's other keys), no strip; the PC (D3D12) shows none either way, so it is the deko3d side
 // (port 76 added the multisampled source's bind there, never run before). blur-nx sets it true.
-REXCVAR_DEFINE_BOOL(blur_renut_edram_inherit, false, "Banjo/Renut",
+REXCVAR_DEFINE_BOOL(blur_renut_edram_inherit, true, "Banjo/Renut",
                     "From blur-nx (2026-11-11, port 76; A/B 220): before a draw that keeps part of its target (a write "
                     "mask without every channel, or blending), the target takes what other views wrote over its EDRAM "
                     "tiles since its own last write, through the console's tile and sample layout "

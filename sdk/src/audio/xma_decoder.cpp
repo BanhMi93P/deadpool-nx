@@ -54,7 +54,7 @@ REXCVAR_DECLARE(bool, audio_diag_critical_priority);  // defined in audio_system
 #define REX_XMA_IN_WORKER_BY_DEFAULT 0
 #endif
 // blur-nx (2026-11-13, #65's exact part): see g_worker_waiting.
-REXCVAR_DEFINE_BOOL(audio_xma_kick_wake_idle_only, false, "Audio",
+REXCVAR_DEFINE_BOOL(audio_xma_kick_wake_idle_only, true, "Audio",
                     "XMA (audio_xma_in_worker 1 or 2): a kick signals the XMA Decoder thread only when it waits; a busy "
                     "worker finds the kick's marks in its next pass (no wake is lost: a handshake on the marks). The "
                     "same decodes, fewer signals")
@@ -667,18 +667,21 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
     // XMADisableContext
     uint32_t base_context_id = (r - XmaRegister::Context0Lock) * 32;
     const int64_t lock_before = NowNs();
+    const int32_t worker_mode = REXCVAR_GET(audio_xma_in_worker);
     uint64_t lock_contexts = 0;
     for (int i = 0; value && i < 32; ++i, value >>= 1) {
       if (value & 1) {
         uint32_t context_id = base_context_id + i;
         auto& context = contexts_[context_id];
         ++lock_contexts;
+        // If a kick is still queued for the worker, finish it before Disable()
+        // so rapid Kick->Lock polling cannot starve the worker or drop kicks.
+        if (worker_mode != 0 && TakePending(context_id)) {
+          if (context.Work()) {
+            context.SignalWorkDone();
+          }
+        }
         context.Disable();
-        // [XMA fix] Added Block(false) after Disable(). Without this, the game
-        // could call XMADisableContext and start modifying the context struct
-        // while a decode was still in progress on the worker thread. Block()
-        // waits for the context mutex to be free (poll=false means wait, not spin).
-        context.Block(false);
       }
     }
     // Measurement only: how long the thread requesting the lock waits for the worker to release the
