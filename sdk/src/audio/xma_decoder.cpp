@@ -410,8 +410,9 @@ void XmaDecoder::WorkerThreadMain() {
     if (pending_was) {
       // From the kick to the data being written: the latency the game could notice.
       const int64_t from = g_pending_from_ns.load(std::memory_order_acquire);
-      if (from) {
-        const uint64_t latency = uint64_t(NowNs() - from);
+      const int64_t now_ns = NowNs();
+      if (from && now_ns >= from) {
+        const uint64_t latency = uint64_t(now_ns - from);
         WorkerPeriod();  // blur-nx (2026-11-13, M-39)
         AddOwn(g_measurement_xma_worker.latency_ns, latency);
         AddOwn(g_measurement_xma_worker.latency_n, 1);
@@ -674,14 +675,20 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
         uint32_t context_id = base_context_id + i;
         auto& context = contexts_[context_id];
         ++lock_contexts;
-        // If a kick is still queued for the worker, finish it before Disable()
-        // so rapid Kick->Lock polling cannot starve the worker or drop kicks.
-        if (worker_mode != 0 && TakePending(context_id)) {
+        if (worker_mode != 0) {
+          // Drain any pending kick before Disable() clears is_enabled_, including when the
+          // worker just took the pending bit but hasn't acquired context.lock_ yet.
+          const bool took = TakePending(context_id);
           if (context.Work()) {
             context.SignalWorkDone();
+            if (took) {
+              g_measurement_xma.contexts_backup.fetch_add(1, std::memory_order_relaxed);
+            }
           }
         }
         context.Disable();
+        // [XMA fix] Wait for any in-flight decode on the worker thread before returning.
+        context.Block(false);
       }
     }
     // Measurement only: how long the thread requesting the lock waits for the worker to release the

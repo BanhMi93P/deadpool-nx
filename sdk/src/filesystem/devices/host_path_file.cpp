@@ -803,7 +803,9 @@ std::shared_ptr<const std::vector<uint8_t>> GetOrBuildPatchedCoalescedIni(
       {"[SystemSettings]\r\n", "DecalCullDistanceScale=1.0\r\n",
        "DecalCullDistanceScale=0.5\r\n"},
       {"[SystemSettings]\r\n", "QualityBloom=True\r\n", "QualityBloom=False\r\n"},
-      {"[SystemSettings]\r\n", "DepthOfField=True\r\n", "DepthOfField=False\r\n"},
+      // Keep DepthOfField=True: UDOFEffect::IsShown (sub_82526198) requires it for
+      // UUberPostProcessEffect to run and populate SceneColorLDR (GSceneRenderTargets+476),
+      // which Scaleform composites as the 3D scene during Near-Death blood vignette.
       {"[SystemSettings]\r\n", "Bloom=True\r\n", "Bloom=False\r\n"},
       {"[SystemSettings]\r\n", "DynamicShadows=True\r\n", "DynamicShadows=False\r\n"},
       {"[SystemSettings]\r\n", "SkeletalMeshLODBias=0\r\n", "SkeletalMeshLODBias=1\r\n"},
@@ -919,6 +921,48 @@ bool PatchButtonImport(std::vector<uint8_t>& blk, const char* old_name, const ch
     }
   }
   return any;
+}
+
+bool SwapButtonImports(std::vector<uint8_t>& blk, const char* name_a, const char* name_b) {
+  const size_t len_a = std::strlen(name_a);
+  if (std::strlen(name_b) != len_a) {
+    return false;
+  }
+  const size_t nlen = len_a + 1;
+  bool found_a = false;
+  bool found_b = false;
+  for (size_t i = 0; i + nlen <= blk.size(); ++i) {
+    if (std::memcmp(blk.data() + i, name_a, nlen) == 0) {
+      std::memcpy(blk.data() + i, name_b, nlen);
+      found_a = true;
+      i += nlen - 1;
+    } else if (std::memcmp(blk.data() + i, name_b, nlen) == 0) {
+      std::memcpy(blk.data() + i, name_a, nlen);
+      found_b = true;
+      i += nlen - 1;
+    }
+  }
+  return found_a && found_b;
+}
+
+bool PatchExactBytes(std::vector<uint8_t>& blk, const uint8_t* old_bytes, const uint8_t* new_bytes,
+                     size_t len) {
+  if (len == 0 || blk.size() < len) {
+    return false;
+  }
+  size_t hits = 0;
+  size_t hit_off = 0;
+  for (size_t i = 0; i + len <= blk.size(); ++i) {
+    if (std::memcmp(blk.data() + i, old_bytes, len) == 0) {
+      hit_off = i;
+      ++hits;
+    }
+  }
+  if (hits != 1) {
+    return false;
+  }
+  std::memcpy(blk.data() + hit_off, new_bytes, len);
+  return true;
 }
 
 template <typename PatchFn>
@@ -1097,19 +1141,42 @@ std::shared_ptr<const std::vector<uint8_t>> GetOrBuildPatchedTransGameXxx(
     return nullptr;
   }
 
-  // 2) Enemy Counter (0x02d3 -> Gamepad_A_64) & Momentum Counter (0x02f7 -> Gamepad_A) in Chunk 19 Blk 1.
-  if (!PatchTransGameChunkBlock(buf, 0x132CA26u, 0x1331886u, "chunk19_blk1",
+  // 2) Enemy Counter (0x02d3 -> Gamepad_A_64), melee prompts (X_64 <-> Y_64), and remaining Momentum
+  // combo icons (Counter B->A via 0x02f7, Heavy Y->X via Sprite 0x0304, Light X->Y via Sprite 0x0306)
+  // in Chunk 19 Blk 1.
+  if (!PatchTransGameChunkBlock(buf, 0x132669Cu, 0x1331E91u, "chunk19_blk1",
                                 [](std::vector<uint8_t>& blk) {
+                                  static constexpr uint8_t kHeavyOld[] = {
+                                      0xFF, 0x09, 0x10, 0x00, 0x00, 0x00, 0x04, 0x03,
+                                      0x01, 0x00, 0x86, 0x06, 0x06, 0x01, 0x00, 0x03,
+                                      0x03, 0x00, 0x40, 0x00, 0x00, 0x00};
+                                  static constexpr uint8_t kHeavyNew[] = {
+                                      0xFF, 0x09, 0x10, 0x00, 0x00, 0x00, 0x04, 0x03,
+                                      0x01, 0x00, 0x86, 0x06, 0x06, 0x01, 0x00, 0xC1,
+                                      0x00, 0x00, 0x40, 0x00, 0x00, 0x00};
+                                  static constexpr uint8_t kLightOld[] = {
+                                      0xFF, 0x09, 0x10, 0x00, 0x00, 0x00, 0x06, 0x03,
+                                      0x01, 0x00, 0x86, 0x06, 0x06, 0x01, 0x00, 0xC1,
+                                      0x00, 0x00, 0x40, 0x00, 0x00, 0x00};
+                                  static constexpr uint8_t kLightNew[] = {
+                                      0xFF, 0x09, 0x10, 0x00, 0x00, 0x00, 0x06, 0x03,
+                                      0x01, 0x00, 0x86, 0x06, 0x06, 0x01, 0x00, 0x03,
+                                      0x03, 0x00, 0x40, 0x00, 0x00, 0x00};
                                   return PatchButtonImport(blk, "Gamepad_B_64", "Gamepad_A_64") &&
-                                         PatchButtonImport(blk, "Gamepad_B", "Gamepad_A");
+                                         PatchButtonImport(blk, "Gamepad_B", "Gamepad_A") &&
+                                         SwapButtonImports(blk, "Gamepad_X_64", "Gamepad_Y_64") &&
+                                         PatchExactBytes(blk, kHeavyOld, kHeavyNew,
+                                                         sizeof(kHeavyOld)) &&
+                                         PatchExactBytes(blk, kLightOld, kLightNew,
+                                                         sizeof(kLightOld));
                                 })) {
     return nullptr;
   }
 
   cached = std::make_shared<const std::vector<uint8_t>>(std::move(buf));
   REXFS_INFO(
-      "[io] TransGame.xxx patched in memory: {} -> {} bytes (Gamepad_A -> Gamepad_B for Jump Momentum, "
-      "Gamepad_B_64 -> Gamepad_A_64, Gamepad_B -> Gamepad_A)",
+      "[io] TransGame.xxx patched in memory: {} -> {} bytes (Momentum: Jump A->B, Light X->Y, "
+      "Heavy Y->X, Counter B->A; 64px: B_64->A_64, X_64<->Y_64)",
       file_size, cached->size());
   return cached;
 }

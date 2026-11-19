@@ -64,7 +64,7 @@ STORE32 = re.compile(r'^(\t)REX_STORE_D_U32\(((?:ctx\.r1|r1l)\.u32), (-?\d+), (.
 VLOAD = re.compile(r'^\tsimde_mm_store_si128\(\(simde__m128i\*\)((?:ctx\.)?v\d+)\.u8, REX_BSWAP128\(simde_mm_load_si128'
                    r'\(\(simde__m128i\*\)REX_RAW_ADDR\(ea\)\)\)\);$')
 EA_LINE = re.compile(r'^\tea = \(.+\) & ~0xF;$')
-FWD = re.compile(r'^\tREX_STACK_FWD4\(((?:ctx\.)?v\d+), ea, .*\);$')
+FWD = re.compile(r'^\tREX_STACK_FWD4\(((?:ctx\.|l_)?v\d+), ea, .*\);$')
 CAPTURE = re.compile(r'\(rex_fw\d+ = \((.*?)\)\)\);$')
 STORE_MNEMONICS = re.compile(r'^(st|dcbz|dcbz128)')
 
@@ -96,6 +96,10 @@ def rewrite_function(lines, stats):
         while j < len(out) and not COMMENT.match(out[j]) and not LABEL.match(out[j]):
             j += 1
         body = range(i + 1, j)
+        if mn.startswith('b') or any('goto ' in out[k] or 'return;' in out[k] or '(ctx, base)' in out[k] or 'switch (' in out[k] for k in body):
+            slots, base, foreign = {}, {'r1': 0}, True
+            i = j
+            continue
         writes_r1 = (ops and ops[0] == 'r1' and not mn.startswith('st')) or (
             mn in ('stwu', 'stdu', 'stwux', 'stdux') and len(ops) >= 2 and ops[1].endswith('(r1)'))
         if writes_r1:

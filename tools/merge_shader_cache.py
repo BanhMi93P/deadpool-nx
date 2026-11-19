@@ -1,107 +1,144 @@
+#!/usr/bin/env python3
+"""Merge a newly recompiled shader_cache.cpp (partial or extra captures) into
+app/out/renut_switch/shader_cache_switch.cpp cleanly and idempotently.
+
+Replaced entries (hashes present in --extra) take the new metadata, vertex
+inputs, and literals; entries only in the base table keep their existing
+metadata and their sliced vertex inputs / literals, compacted tightly with no
+stale holes. Output keeps DXIL/SPIR-V offsets zeroed for Switch (deko3d reads
+GLSL from deko3d_glsl.bin).
+"""
+import argparse
+import os
 import re
+import sys
 
-with open('app/out/renut_switch/shader_cache_switch.cpp', 'r', encoding='utf-8', errors='ignore') as f:
-    orig_cpp = f.read()
+ENTRY_RE = re.compile(
+    r'^\t\{ (0x[0-9A-Fa-f]+), (?:0x[0-9A-Fa-f]+|\d+), (?:0x[0-9A-Fa-f]+|\d+), '
+    r'(?:0x[0-9A-Fa-f]+|\d+), (?:0x[0-9A-Fa-f]+|\d+), '
+    r'(0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), '
+    r'(\{ [^}]+ \}), (\{ [^}]+ \}), (\d+), (\d+), (\d+), (\d+), (0x[0-9A-Fa-f]+|\d+) \},$',
+    re.MULTILINE,
+)
 
-with open('out/test_capture/test.cpp', 'r', encoding='utf-8', errors='ignore') as f:
-    test_cpp = f.read()
 
-# 1. Parse test entries first so merge is idempotent against a previously merged file
-entry_re = re.compile(r'^\t\{ (0x[0-9A-Fa-f]+), (\d+), (\d+), (\d+), (\d+), (0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), (0x[0-9A-Fa-f]+|\d+), (\{ [^}]+ \}), (\{ [^}]+ \}), (\d+), (\d+), (\d+), (\d+), (0x[0-9A-Fa-f]+|\d+) \},$', re.MULTILINE)
-base_vi = 2397
-base_lit = 25579
+def parse_cache(text, path):
+    entries = {}
+    for m in ENTRY_RE.finditer(text):
+        h = int(m.group(1), 16)
+        entries[h] = (
+            m.group(1),
+            m.group(2),
+            m.group(3),
+            m.group(4),
+            m.group(5),
+            m.group(6),
+            int(m.group(7)),
+            int(m.group(8)),
+            int(m.group(9)),
+            int(m.group(10)),
+            m.group(11),
+        )
+    if not entries:
+        sys.exit(f'merge_shader_cache: no entries parsed from {path}')
 
-new_entries = []
-new_hashes = set()
-for m in entry_re.finditer(test_cpp):
-    h = int(m.group(1), 16)
-    vi_offset = int(m.group(11))
-    vi_count = int(m.group(12))
-    lit_offset = int(m.group(13))
-    lit_count = int(m.group(14))
+    vi_m = re.search(r'ShaderVertexInput g_shaderVertexInputs\[\] = \{(.*?)\};', text, re.DOTALL)
+    lit_m = re.search(r'ShaderLiteral g_shaderLiterals\[\] = \{(.*?)\};', text, re.DOTALL)
+    vi_lines = [l.strip() for l in vi_m.group(1).strip().splitlines() if l.strip()]
+    lit_lines = [l.strip() for l in lit_m.group(1).strip().splitlines() if l.strip()]
+    if vi_lines[-1] != '{ 0, 0, 0, 0, 0, 0, 0 },' or lit_lines[-1] != '{ 0, { 0, 0, 0, 0 } },':
+        sys.exit(f'merge_shader_cache: missing sentinel in {path}')
 
-    new_vi_offset = (vi_offset + base_vi) if vi_count > 0 else 0
-    new_lit_offset = (lit_offset + base_lit) if lit_count > 0 else 0
+    layout_m = re.search(r'g_shaderCacheLayout\s*=\s*(\d+);', text)
+    layout = int(layout_m.group(1)) if layout_m else None
+    return entries, vi_lines[:-1], lit_lines[:-1], layout
 
-    new_line = f'\t{{ {m.group(1)}, 0, 0, 0, 0, {m.group(6)}, {m.group(7)}, {m.group(8)}, {m.group(9)}, {m.group(10)}, {new_vi_offset}, {vi_count}, {new_lit_offset}, {lit_count}, {m.group(15)} }},\n'
-    new_entries.append((h, new_line))
-    new_hashes.add(h)
-assert len(new_entries) == 50
 
-# 2. Parse base entries (excluding test hashes if already merged)
-entry_line_re = re.compile(r'^\t\{ (0x[0-9A-Fa-f]+),.*?\n', re.MULTILINE)
-existing_entries = []
-for m in entry_line_re.finditer(orig_cpp):
-    h = int(m.group(1), 16)
-    if h not in new_hashes:
-        existing_entries.append((h, m.group(0)))
-assert len(existing_entries) == 5849
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--base', default='app/out/renut_switch/shader_cache_switch.cpp')
+    ap.add_argument('--extra', default='out/deko3d_shaders_v2/recompiled_2628.cpp')
+    ap.add_argument('--out', default='app/out/renut_switch/shader_cache_switch.cpp')
+    a = ap.parse_args()
 
-all_entries = existing_entries + new_entries
-all_entries.sort(key=lambda x: x[0])
-assert len(all_entries) == 5899
+    base_text = open(a.base, 'r', encoding='utf-8', errors='ignore').read()
+    extra_text = open(a.extra, 'r', encoding='utf-8', errors='ignore').read()
 
-# Verify strictly increasing
-for i in range(len(all_entries) - 1):
-    assert all_entries[i][0] < all_entries[i+1][0]
+    base_entries, base_vi, base_lit, base_layout = parse_cache(base_text, a.base)
+    extra_entries, extra_vi, extra_lit, extra_layout = parse_cache(extra_text, a.extra)
+    if base_layout != extra_layout:
+        sys.exit(f'merge_shader_cache: layout mismatch {base_layout} vs {extra_layout}')
 
-# 3. Parse VI
-orig_vi_match = re.search(r'ShaderVertexInput g_shaderVertexInputs\[\] = \{(.*?)\};', orig_cpp, re.DOTALL)
-orig_vi_lines = [l.strip() for l in orig_vi_match.group(1).strip().splitlines() if l.strip()]
-assert orig_vi_lines[-1] == '{ 0, 0, 0, 0, 0, 0, 0 },'
-active_orig_vi = orig_vi_lines[:-1]
-assert len(active_orig_vi) in (base_vi, base_vi + 60)
-active_orig_vi = active_orig_vi[:base_vi]
+    all_hashes = sorted(set(base_entries) | set(extra_entries))
+    out_vi = []
+    out_lit = []
+    out_entry_lines = []
+    updated = 0
+    added = 0
+    kept = 0
 
-test_vi_match = re.search(r'ShaderVertexInput g_shaderVertexInputs\[\] = \{(.*?)\};', test_cpp, re.DOTALL)
-test_vi_lines = [l.strip() for l in test_vi_match.group(1).strip().splitlines() if l.strip()]
-assert test_vi_lines[-1] == '{ 0, 0, 0, 0, 0, 0, 0 },'
-active_test_vi = test_vi_lines[:-1]
-assert len(active_test_vi) == 60
+    for h in all_hashes:
+        if h in extra_entries:
+            if h in base_entries:
+                updated += 1
+            else:
+                added += 1
+            rec = extra_entries[h]
+            src_vi, src_lit = extra_vi, extra_lit
+        else:
+            kept += 1
+            rec = base_entries[h]
+            src_vi, src_lit = base_vi, base_lit
 
-all_vi_lines = active_orig_vi + active_test_vi + ['{ 0, 0, 0, 0, 0, 0, 0 },']
+        h_str, spec, vfm, tfm, me, fc, vi_off, vi_cnt, lit_off, lit_cnt, flags = rec
+        if vi_off + vi_cnt > len(src_vi) or lit_off + lit_cnt > len(src_lit):
+            sys.exit(f'merge_shader_cache: slice out of bounds for {h_str}')
 
-# 4. Parse Literals
-orig_lit_match = re.search(r'ShaderLiteral g_shaderLiterals\[\] = \{(.*?)\};', orig_cpp, re.DOTALL)
-orig_lit_lines = [l.strip() for l in orig_lit_match.group(1).strip().splitlines() if l.strip()]
-assert orig_lit_lines[-1] == '{ 0, { 0, 0, 0, 0 } },'
-active_orig_lit = orig_lit_lines[:-1]
-assert len(active_orig_lit) in (base_lit, base_lit + 268)
-active_orig_lit = active_orig_lit[:base_lit]
+        new_vi_off = len(out_vi) if vi_cnt > 0 else 0
+        new_lit_off = len(out_lit) if lit_cnt > 0 else 0
+        out_vi.extend(src_vi[vi_off:vi_off + vi_cnt])
+        out_lit.extend(src_lit[lit_off:lit_off + lit_cnt])
 
-test_lit_match = re.search(r'ShaderLiteral g_shaderLiterals\[\] = \{(.*?)\};', test_cpp, re.DOTALL)
-test_lit_lines = [l.strip() for l in test_lit_match.group(1).strip().splitlines() if l.strip()]
-assert test_lit_lines[-1] == '{ 0, { 0, 0, 0, 0 } },'
-active_test_lit = test_lit_lines[:-1]
-assert len(active_test_lit) == 268
+        out_entry_lines.append(
+            f'\t{{ {h_str}, 0, 0, 0, 0, {spec}, {vfm}, {tfm}, {me}, {fc}, '
+            f'{new_vi_off}, {vi_cnt}, {new_lit_off}, {lit_cnt}, {flags} }},\n'
+        )
 
-all_lit_lines = active_orig_lit + active_test_lit + ['{ 0, { 0, 0, 0, 0 } },']
+    out_vi.append('{ 0, 0, 0, 0, 0, 0, 0 },')
+    out_lit.append('{ 0, { 0, 0, 0, 0 } },')
 
-# Assemble new file
-out_lines = []
-out_lines.append('#include "shader_cache.h"\n')
-out_lines.append('ShaderCacheEntry g_shaderCacheEntries[] = {\n')
-for _, line in all_entries:
-    out_lines.append(line)
-out_lines.append('};\n')
+    tail_match = re.search(r'(const uint8_t g_compressedDxilCache\[\].*)$', base_text, re.DOTALL)
+    if not tail_match:
+        sys.exit(f'merge_shader_cache: missing tail block in {a.base}')
+    tail_text = re.sub(
+        r'const size_t g_shaderCacheEntryCount = \d+;',
+        f'const size_t g_shaderCacheEntryCount = {len(all_hashes)};',
+        tail_match.group(1),
+    )
 
-out_lines.append('ShaderVertexInput g_shaderVertexInputs[] = {\n')
-for l in all_vi_lines:
-    out_lines.append('\t' + l + '\n')
-out_lines.append('};\n')
+    tmp_path = a.out + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('#include "shader_cache.h"\n')
+        f.write('ShaderCacheEntry g_shaderCacheEntries[] = {\n')
+        f.writelines(out_entry_lines)
+        f.write('};\n')
+        f.write('ShaderVertexInput g_shaderVertexInputs[] = {\n')
+        for l in out_vi:
+            f.write(f'\t{l}\n')
+        f.write('};\n')
+        f.write('ShaderLiteral g_shaderLiterals[] = {\n')
+        for l in out_lit:
+            f.write(f'\t{l}\n')
+        f.write('};\n')
+        f.write(tail_text)
+    os.replace(tmp_path, a.out)
 
-out_lines.append('ShaderLiteral g_shaderLiterals[] = {\n')
-for l in all_lit_lines:
-    out_lines.append('\t' + l + '\n')
-out_lines.append('};\n')
+    print(
+        f'merge_shader_cache: {len(all_hashes)} total entries '
+        f'(kept {kept}, updated {updated}, added {added}); '
+        f'{len(out_vi) - 1} vertex inputs, {len(out_lit) - 1} literals -> {a.out}'
+    )
 
-tail_match = re.search(r'(const uint8_t g_compressedDxilCache\[\].*)$', orig_cpp, re.DOTALL)
-tail_text = tail_match.group(1)
-tail_text = re.sub(r'const size_t g_shaderCacheEntryCount = \d+;', 'const size_t g_shaderCacheEntryCount = 5899;', tail_text)
-out_lines.append(tail_text)
 
-full_output = ''.join(out_lines)
-with open('app/out/renut_switch/shader_cache_switch.cpp', 'w', encoding='utf-8') as f:
-    f.write(full_output)
-
-print('Successfully written merged shader_cache_switch.cpp with 5899 entries!')
+if __name__ == '__main__':
+    main()

@@ -64,6 +64,10 @@ public:
         if (!fpsManager || !fpsManager->showFPS) return;
         if (!AppImGuiReady()) return;  // renut-ultimate (port 66)
 
+        float hostFps = static_cast<float>(rex::cvar::Query<double>("present_host_fps"));
+        float generatedFps = static_cast<float>(rex::cvar::Query<double>("present_fsr3_generated_fps"));
+        if (fpsManager->counters.empty() && hostFps <= 0.5f && generatedFps <= 0.5f) return;
+
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration;
 
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
@@ -83,12 +87,10 @@ public:
             ImGui::TextColored(color,"gpu: %.1fms", gpuMS);
         }
 
-        float hostFps = static_cast<float>(rex::cvar::Query<double>("present_host_fps"));
         if (hostFps > 0.5f) {
             ImGui::TextColored(ImVec4(0.65f, 0.4f, 1.0f, 1.0f), "%.0f FPS (host)", hostFps);
         }
 
-        float generatedFps = static_cast<float>(rex::cvar::Query<double>("present_fsr3_generated_fps"));
         if (generatedFps > 0.5f) {
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.85f, 1.0f), "%.0f FPS (generated)",
                                generatedFps);

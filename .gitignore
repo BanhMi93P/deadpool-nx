@@ -48,3 +48,20 @@ pgo/*
 # 2026-11-11 (port 81): the in-place copies' form has a profile of its own (CMake BANJO_PGO_DIR_IN_PLACE), kept the same way
 pgo-inplace/*
 !pgo-inplace/*.gcda
+
+# Local workspace & build artifacts (never commit)
+.superpowers/
+.vscode/
+backup/
+game/
+input/
+output/
+scratch/
+shader_capture/
+shaders/raw/
+temp/
+perf_detailed.txt
+perf_summary.txt
+tools/create_backup*.py
+**/.gradle/
+

@@ -151,14 +151,7 @@ public:
         enable_default("log_level", "info");
         enable_default("log_file_writer", "true");
         enable_default("switch_profile_stacks", "true");
-        enable_default("renut_gpu_profile", "10.0");
-        enable_default("renut_gpu_profile_counters", "true");
-        enable_default("banjo_renut_diag_gpu_shaders", "true");
-        enable_default("sasrt_gpu_diag_profile_vs", "true");
-        enable_default("sasrt_gpu_diag_resolve_split", "true");
-        enable_default("renut_memory_report", "10.0");
-        enable_default("banjo_renut_heap_walk_every", "3");
-        enable_default("banjo_show_fps", "true");
+        enable_default("renut_memory_report", "30.0");
     }
 
     void OnPreSetup(rex::RuntimeConfig& config) override {
