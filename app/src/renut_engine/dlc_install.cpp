@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -33,6 +34,7 @@ REXCVAR_DEFINE_BOOL(katamari_dlc_unlock_packs, false, "Nuts&Bolts/DLC",
     "Special Accessory): false (the default) keeps them from the game, though they stay installed; true shows them "
     "too. The stage packs are shown either way.");
 REXCVAR_DECLARE(std::string, dlc_hidden);  // sdk/src/system/xam/content_manager.cpp
+REXCVAR_DECLARE(bool, dlc_enabled);  // sdk/src/system/xam/content_manager.cpp
 
 namespace renut::dlc {
 
@@ -118,6 +120,35 @@ std::vector<std::string> ReadInstalledList(const fs::path &list) {
     return lines;
 }
 
+std::string LowerAscii(std::string s) {
+    for (char &c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+void CollectFilesRecursive(const fs::path &dir, std::vector<fs::path> &files,
+                           std::vector<std::string> &seen_keys) {
+    for (const auto &info : rex::filesystem::ListFiles(dir)) {
+        const std::string fname = rex::path_to_utf8(info.name);
+        if (fname.empty() || fname.front() == '.' || fname == kInstalledList)
+            continue;
+        const fs::path full = dir / info.name;
+        if (info.type == rex::filesystem::FileInfo::Type::kDirectory) {
+            CollectFilesRecursive(full, files, seen_keys);
+            continue;
+        }
+        if (info.type != rex::filesystem::FileInfo::Type::kFile)
+            continue;
+        std::string key = rex::path_to_utf8(full);
+        std::replace(key.begin(), key.end(), '\\', '/');
+        key = LowerAscii(std::move(key));
+        if (std::find(seen_keys.begin(), seen_keys.end(), key) == seen_keys.end()) {
+            seen_keys.push_back(std::move(key));
+            files.push_back(full);
+        }
+    }
+}
+
 std::string ListEntry(const std::string &file_name, uintmax_t size) {
     return file_name + " " + std::to_string(size);
 }
@@ -131,31 +162,41 @@ void SetUserDataRoot(const fs::path &root) {
 void InstallPackages(rex::Runtime *runtime) {
     if (!runtime || !runtime->kernel_state())
         return;
-    if (!REXCVAR_GET(katamari_dlc_unlock_packs)) {
-        std::string &hidden = REXCVAR_GET(dlc_hidden);
-        for (const char *name : kKatamariUnlockPacks) {
-            if (!hidden.empty())
-                hidden += ';';
-            hidden += name;
-        }
-        RNUT_INFO("DLC: katamari_dlc_unlock_packs = false: the accessory, character and special accessory packs "
-                  "are kept from the game");
-    }
+    if (!REXCVAR_GET(dlc_enabled))
+        return;
     fs::path folder = rex::to_path(REXCVAR_GET(renut_dlc_folder));
     if (folder.is_relative())
         folder = rex::filesystem::GetExecutableFolder() / folder;  // banjo-nx: next to the NRO / exe
+    while (folder.filename().empty() && !folder.parent_path().empty())
+        folder = folder.parent_path();
     std::error_code ec;
     fs::create_directories(folder, ec);
 
+    std::vector<fs::path> scan_roots = {folder};
+    if (LowerAscii(rex::path_to_utf8(folder.filename())) == "dlc") {
+        const fs::path alt = folder.parent_path() / "DLC";
+        rex::filesystem::FileInfo alt_info{};
+        if (rex::filesystem::GetInfo(alt, &alt_info) &&
+            alt_info.type == rex::filesystem::FileInfo::Type::kDirectory) {
+            scan_roots.push_back(alt);
+        }
+    }
+
     std::vector<fs::path> files;
-    for (const auto &entry : fs::directory_iterator(folder, ec))
-        if (entry.is_regular_file(ec) && entry.path().filename() != kInstalledList)
-            files.push_back(entry.path());
+    std::vector<std::string> seen_keys;
+    for (const fs::path &root_dir : scan_roots)
+        CollectFilesRecursive(root_dir, files, seen_keys);
     std::sort(files.begin(), files.end());
+
+    const uint32_t title_id = runtime->kernel_state()->title_id();
+    std::fprintf(stderr, "[dlc] scan folder='%s' alt='%s' user_root='%s' title=%08X -> %zu file(s)\n",
+                 rex::path_to_utf8(folder).c_str(),
+                 scan_roots.size() > 1 ? rex::path_to_utf8(scan_roots[1]).c_str() : "",
+                 rex::path_to_utf8(g_user_data_root).c_str(), title_id, files.size());
+    std::fflush(stderr);
     if (files.empty())
         return;
 
-    const uint32_t title_id = runtime->kernel_state()->title_id();
     const fs::path list_path = folder / kInstalledList;
     std::vector<std::string> installed = ReadInstalledList(list_path);
     bool list_changed = false;
@@ -166,36 +207,62 @@ void InstallPackages(rex::Runtime *runtime) {
         Package package;
         if (!ReadPackage(path, package)) {
             RNUT_WARN("DLC: {} is not an Xbox 360 package; left alone", file_name);
+            std::fprintf(stderr, "[dlc] skip '%s': not an Xbox 360 package\n", file_name.c_str());
             continue;
         }
         if (package.title_id != title_id) {
             RNUT_WARN("DLC: {} ({}) is for another game (title {:08X}); left alone", file_name, package.name,
                       package.title_id);
+            std::fprintf(stderr, "[dlc] skip '%s' (%s): other title %08X (expected %08X)\n", file_name.c_str(),
+                         package.name.c_str(), package.title_id, title_id);
             continue;
         }
         if (package.content_type != kContentTypeMarketplace) {
             RNUT_WARN("DLC: {} ({}) is not DLC (content type {:X}); left alone", file_name, package.name,
                       package.content_type);
+            std::fprintf(stderr, "[dlc] skip '%s' (%s): not DLC (type 0x%X)\n", file_name.c_str(),
+                         package.name.c_str(), package.content_type);
             continue;
         }
-        const uintmax_t size = fs::file_size(path, ec);
+        rex::filesystem::FileInfo file_info{};
+        const uintmax_t size =
+            rex::filesystem::GetInfo(path, &file_info) ? static_cast<uintmax_t>(file_info.total_size) : 0;
         const std::string entry = ListEntry(file_name, size);
         const fs::path header = InstalledHeader(title_id, file_name);
+        const fs::path data_dir =
+            header.empty() ? fs::path{}
+                           : header.parent_path().parent_path().parent_path() / kContentTypeFolder / file_name;
         const bool listed = std::find(installed.begin(), installed.end(), entry) != installed.end();
-        const bool header_there = !header.empty() && fs::exists(header, ec);
-        if (header_there || (header.empty() && listed)) {
+        rex::filesystem::FileInfo header_info{};
+        const bool header_there = !header.empty() && rex::filesystem::GetInfo(header, &header_info) &&
+                                  header_info.type == rex::filesystem::FileInfo::Type::kFile &&
+                                  header_info.total_size > 0;
+        rex::filesystem::FileInfo data_info{};
+        const bool data_there = !data_dir.empty() && rex::filesystem::GetInfo(data_dir, &data_info) &&
+                                data_info.type == rex::filesystem::FileInfo::Type::kDirectory &&
+                                !rex::filesystem::ListFiles(data_dir).empty();
+        if ((header_there && data_there) || (header.empty() && listed)) {
+            std::fprintf(stderr, "[dlc] already installed: '%s' (%s) dir='%s'\n", package.name.c_str(),
+                         file_name.c_str(), rex::path_to_utf8(data_dir).c_str());
             ++present;
             continue;
         }
 
         RNUT_INFO("DLC: installing {} ({})...", package.name, file_name);
+        std::fprintf(stderr, "[dlc] installing '%s' (%s)...\n", package.name.c_str(), file_name.c_str());
+        std::fflush(stderr);
         const std::string utf8 = rex::path_to_utf8(path);
         const auto result = runtime->kernel_state()->content_manager()->InstallContent(utf8.c_str());
         if (result != 0) {
             RNUT_ERROR("DLC: {} ({}) did not install (error {:08X})", package.name, file_name, unsigned(result));
+            std::fprintf(stderr, "[dlc] FAILED '%s' (%s): error=0x%08X\n", package.name.c_str(),
+                         file_name.c_str(), unsigned(result));
+            std::fflush(stderr);
             continue;
         }
         RNUT_INFO("DLC: {} installed", package.name);
+        std::fprintf(stderr, "[dlc] installed '%s' (%s)\n", package.name.c_str(), file_name.c_str());
+        std::fflush(stderr);
         ++newly;
         if (!listed) {
             installed.push_back(entry);
@@ -208,8 +275,11 @@ void InstallPackages(rex::Runtime *runtime) {
         for (const std::string &line : installed)
             f << line << "\n";
     }
-    if (newly || present)
+    if (newly || present) {
         RNUT_INFO("DLC: {} package(s) installed now, {} already installed", newly, present);
+        std::fprintf(stderr, "[dlc] summary: %d newly installed, %d already installed\n", newly, present);
+    }
+    std::fflush(stderr);
 }
 
 } // namespace renut::dlc

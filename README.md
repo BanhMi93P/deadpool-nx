@@ -33,6 +33,7 @@ Your `deadpool-nx` folder on the SD card should look like this:
   deadpool.toml             (your settings)
   deko3d_glsl.bin           (13,307 translated deko3d GLSL shaders)
   deko3d_shaders.bin        (26,394 precompiled Switch GPU shader variants)
+  dlc/                      (optional: place your Xbox 360 DLC package file here)
   game/                     (the files from your Xbox 360 disc; game_root/ is also supported)
     default.xex
     TransGame/
@@ -74,6 +75,38 @@ the physical Switch button labels on your controller:
 To map buttons by letter instead (`A -> A`, `B -> B`, `X -> X`, `Y -> Y`), set `input_xbox_layout = true` in
 `deadpool.toml`.
 
+## Language
+
+Set `language` in `sdmc:/switch/deadpool-nx/deadpool.toml` to choose the in-game language:
+
+```toml
+language = "english"
+```
+
+Supported values:
+
+- `"english"` *(default)* — English (`en`, `int`, `1`)
+- `"german"` — Deutsch (`de`, `deu`, `deutsch`, `3`)
+- `"french"` — Français (`fr`, `fra`, `francais`, `4`)
+- `"spanish"` — Español (`es`, `esn`, `espanol`, `5`)
+- `"italian"` — Italiano (`it`, `ita`, `italiano`, `6`)
+- `"auto"` — Automatically match the Nintendo Switch system language (`0`; falls back to English for unsupported console languages)
+
+## DLC
+
+The port supports your own legally obtained Xbox 360 **Merc with a Map Pack** DLC (`Title ID: 415608EC`, STFS marketplace package `4FDD44B4873E403EEC092AC2DC69005412111A1F41`), which adds:
+
+- **2 Challenge Maps:** *GRT Plaza* and *Inside the Tower*
+- **2 Suits (unlocked after beating the story):** *D-Pooly* and *Uncanny X-Force*
+
+How to install:
+
+1. Create `sdmc:/switch/deadpool-nx/dlc/` on your SD card.
+2. Copy your Xbox 360 STFS DLC package file into `sdmc:/switch/deadpool-nx/dlc/`.
+3. Launch the game normally. On startup, the port automatically extracts and installs valid `Title ID 415608EC` marketplace packages into its internal content storage (`renut/`). Files belonging to Xbox 360 Dashboard Avatar items or other games are automatically skipped.
+
+To temporarily disable DLC loading without deleting your files (saves are unaffected), set `dlc_enabled = false` in `deadpool.toml`.
+
 ## Settings
 
 `deadpool.toml`, located next to `deadpool.nro`, holds the runtime configuration:
@@ -82,6 +115,9 @@ To map buttons by letter instead (`A -> A`, `B -> B`, `X -> X`, `Y -> Y`), set `
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| `language` | `"english"` | In-game language: `"auto"`, `"english"`, `"german"`, `"french"`, `"spanish"`, or `"italian"` |
+| `dlc_enabled` | `true` | Enable installing and exposing Xbox 360 marketplace DLC packages (`false` hides DLC without touching saves) |
+| `renut_dlc_folder` | `"dlc"` | Folder next to `deadpool.nro` scanned on startup for Xbox 360 DLC packages |
 | `banjo_renut_render_height_handheld` | `720` | Internal rendering height in handheld mode (`1280x720`) |
 | `banjo_renut_render_height_docked` | `1080` | Internal rendering height in docked mode (`1920x1080`; set to `720` for lower GPU load docked) |
 | `input_xbox_layout` | `false` | `false`: physical Xbox button positions with Switch Momentum HUD icons; `true`: match by button letter |

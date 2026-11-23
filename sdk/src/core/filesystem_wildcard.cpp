@@ -65,28 +65,38 @@ bool WildcardRule::Check(const std::string_view lower, std::string::size_type* o
 void WildcardEngine::PreparePattern(const std::string_view pattern) {
   rules_.clear();
 
+  // Windows / Xbox 360 wildcards treat "*.*" (and trailing ".*" after '*') as matching
+  // names without a dot as well.
+  std::string_view effective = pattern;
+  if (effective == "*.*") {
+    return;
+  }
+  while (effective.size() >= 3 && effective.compare(effective.size() - 3, 3, "*.*") == 0) {
+    effective.remove_suffix(2);
+  }
+
   WildcardFlags flags(WildcardFlags::FIRST);
   size_t n = 0;
   size_t last = 0;
-  while ((n = pattern.find_first_of("*?", last)) != pattern.npos) {
+  while ((n = effective.find_first_of("*?", last)) != effective.npos) {
     if (last != n) {
-      std::string str_str(pattern.substr(last, n - last));
+      std::string str_str(effective.substr(last, n - last));
       rules_.push_back(WildcardRule(str_str, flags));
     }
-    if (pattern[n] == '?') {
-      auto end = pattern.find_first_not_of('?', n + 1);
-      auto count = end == pattern.npos ? (pattern.size() - n) : (end - n);
-      rules_.push_back(WildcardRule(pattern.substr(n, count), WildcardFlags::ANY));
+    if (effective[n] == '?') {
+      auto end = effective.find_first_not_of('?', n + 1);
+      auto count = end == effective.npos ? (effective.size() - n) : (end - n);
+      rules_.push_back(WildcardRule(effective.substr(n, count), WildcardFlags::ANY));
       last = n + count;
-    } else if (pattern[n] == '*') {
+    } else if (effective[n] == '*') {
       last = n + 1;
     } else {
       assert_always();
     }
     flags = WildcardFlags();
   }
-  if (last != pattern.size()) {
-    std::string str_str(pattern.substr(last));
+  if (last != effective.size()) {
+    std::string str_str(effective.substr(last));
     rules_.push_back(
         WildcardRule(str_str, last ? WildcardFlags::LAST : WildcardFlags::FIRST_AND_LAST));
   }

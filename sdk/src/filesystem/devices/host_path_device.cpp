@@ -58,10 +58,12 @@ HostPathDevice::HostPathDevice(const std::string_view mount_path,
 HostPathDevice::~HostPathDevice() = default;
 
 bool HostPathDevice::Initialize() {
-  if (!std::filesystem::exists(host_path_)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(host_path_, ec) || ec) {
     if (!read_only_) {
       // Create the path.
-      std::filesystem::create_directories(host_path_);
+      ec.clear();
+      std::filesystem::create_directories(host_path_, ec);
     } else {
       REXFS_ERROR("Host path does not exist");
       return false;

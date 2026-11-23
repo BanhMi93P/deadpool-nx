@@ -696,6 +696,106 @@ namespace banjo::hot::n_82D60CB8 {
 void Native(PPCContext& ctx, uint8_t* base);
 }
 
+REX_EXTERN(__imp__sub_829CF3F0);
+REX_EXTERN(sub_82D71908);
+
+REXCVAR_DEFINE_BOOL(
+    deadpool_acquire_async_read, true, "Banjo/Enhancements",
+    "Acquire semantics on FArchiveAsync::Serialize (sub_823E55A0) precache-pending counters and non-positive chunk "
+    "guard; prevents reading stale decompressed streaming buffers on AArch64")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace banjo::hand::n_823E55A0 {
+
+[[gnu::always_inline]] inline uint32_t LoadAcquireBE32(uint8_t* base, uint32_t addr) noexcept {
+  const auto* ptr = reinterpret_cast<const uint32_t*>(base + uint64_t(addr) + REX_PHYS_HOST_OFFSET(addr));
+  return __builtin_bswap32(__atomic_load_n(ptr, __ATOMIC_ACQUIRE));
+}
+
+[[gnu::always_inline]] inline void WaitAsyncCounter(PPCContext& ctx, uint8_t* base, uint32_t counter_addr) {
+  while (LoadAcquireBE32(base, counter_addr) != 0u) {
+    ctx.f1.f64 = rex::ppc::SingleToDoubleAnyMode(0x3A83126Fu);  // 0.001f seconds
+    __imp__sub_829CF3F0(ctx, base);
+  }
+}
+
+inline bool TryRun(PPCContext& __restrict ctx, uint8_t* base) {
+  uint32_t self = ctx.r3.u32;
+  uint32_t dst = ctx.r4.u32;
+  int32_t rem = ctx.r5.s32;
+  if (rem <= 0) {
+    return true;
+  }
+
+  // Reserve the guest 144-byte stack frame before calling Sleep / Precache / XMemCpy.
+  const uint32_t sp_in = ctx.r1.u32;
+  const uint32_t sp_frame = sp_in - 144u;
+  REX_STORE_U32_C(sp_frame, sp_in);
+  ctx.r1.u32 = sp_frame;
+
+  while (rem > 0) {
+    const int32_t cur_pos = static_cast<int32_t>(REX_LOAD_D_U32(self, 172));
+    const int32_t buf_start = static_cast<int32_t>(REX_LOAD_D_U32(self, 184));
+    const int32_t buf_end = static_cast<int32_t>(REX_LOAD_D_U32(self, 192));
+    if (cur_pos < buf_start || cur_pos >= buf_end) {
+      const int32_t precached_start = static_cast<int32_t>(REX_LOAD_D_U32(self, 176));
+      int32_t req_size = rem;
+      if (cur_pos >= precached_start) {
+        const int32_t precached_len = static_cast<int32_t>(REX_LOAD_D_U32(self, 180));
+        if (int32_t(uint32_t(cur_pos) + uint32_t(rem)) <=
+            int32_t(uint32_t(precached_len) + uint32_t(precached_start))) {
+          req_size = int32_t((uint32_t(precached_len) - uint32_t(cur_pos)) + uint32_t(precached_start));
+        }
+      }
+      WaitAsyncCounter(ctx, base, self + 208u);
+      WaitAsyncCounter(ctx, base, self + 212u);
+
+      const uint32_t vtable = REX_LOAD_D_U32(self, 0);
+      const uint32_t precache_fn = REX_LOAD_D_U32(vtable, 76);
+      ctx.r3.u64 = self;
+      ctx.r4.u64 = REX_LOAD_D_U32(self, 172);
+      ctx.r5.u64 = uint32_t(req_size);
+      REX_CALL_INDIRECT_FUNC(precache_fn);
+    }
+
+    // Acquire counter == 0 so async decompression stores to BufferPtr / BufferStartPos / BufferEndPos are visible.
+    WaitAsyncCounter(ctx, base, self + 208u);
+
+    const uint32_t cur_pos_u = REX_LOAD_D_U32(self, 172);
+    const int32_t cur_pos_s = static_cast<int32_t>(cur_pos_u);
+    const int32_t buf_end_after = static_cast<int32_t>(REX_LOAD_D_U32(self, 192));
+    int32_t chunk = rem;
+    if (int32_t(cur_pos_u + uint32_t(rem)) > buf_end_after) {
+      chunk = buf_end_after - cur_pos_s;
+    }
+    if (chunk <= 0) [[unlikely]] {
+      break;
+    }
+
+    const uint32_t buf_ptr = REX_LOAD_D_U32(self, 200);
+    const uint32_t buf_start_after = REX_LOAD_D_U32(self, 184);
+    const uint32_t src = (buf_ptr - buf_start_after) + cur_pos_u;
+    ctx.r3.u64 = dst;
+    ctx.r4.u64 = src;
+    ctx.r5.u64 = uint32_t(chunk);
+    sub_82D71908(ctx, base);
+
+    const uint32_t cur_pos_post = REX_LOAD_D_U32(self, 172);
+    rem -= chunk;
+    dst += uint32_t(chunk);
+    REX_STORE_D_U32_C(self, 172, cur_pos_post + uint32_t(chunk));
+  }
+
+  ctx.r1.u32 = sp_in;
+  return true;
+}
+
+}  // namespace banjo::hand::n_823E55A0
+
+namespace banjo::hot::n_823E55A0 {
+void Native(PPCContext& ctx, uint8_t* base);
+}
+
 namespace banjo::hot {
 
 template <>
@@ -707,6 +807,12 @@ template <>
     return ::banjo::hand::n_82D60CB8::VerifyAndRun(ctx, base, &n_82D60CB8::Native);
   }
   return ::banjo::hand::n_82D60CB8::TryRun(ctx, base);
+}
+
+template <>
+[[gnu::always_inline]] inline bool TryCustomOverride<&n_823E55A0::Native>(PPCContext& ctx, uint8_t* base) {
+  if (!bool(REXCVAR_GET(deadpool_acquire_async_read))) [[unlikely]] return false;
+  return ::banjo::hand::n_823E55A0::TryRun(ctx, base);
 }
 
 }  // namespace banjo::hot

@@ -9,6 +9,8 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <cstdio>
+
 #include <rex/cvar.h>
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
@@ -108,6 +110,13 @@ u32 XamContentCreateEnumerator_entry(u32 user_index, u32 device_id, u32 content_
   }
 
   REXKRNL_DEBUG("XamContentCreateEnumerator: added {} items to enumerator", e->item_count());
+  if (content_type == static_cast<uint32_t>(XContentType::kMarketplaceContent) && e->item_count() > 0) {
+    std::fprintf(stderr,
+                 "[dlc] XamContentCreateEnumerator user=%u dev=%u type=%u flags=0x%X items=%zu handle=0x%X\n",
+                 uint32_t(user_index), uint32_t(device_id), uint32_t(content_type),
+                 uint32_t(content_flags), e->item_count(), uint32_t(e->handle()));
+    std::fflush(stderr);
+  }
 
   *handle_out = e->handle();
   return X_ERROR_SUCCESS;
@@ -141,7 +150,7 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
     *disposition_ptr = 0;
   }
 
-  auto run = [content_manager, xuid, root_name = root_name.value(), flags, content_data,
+  auto run = [content_manager, xuid, root_name = std::string(root_name.value()), flags, content_data,
               disposition_ptr,
               license_mask_ptr](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
     X_RESULT result = X_ERROR_INVALID_PARAMETER;
@@ -235,11 +244,25 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
                  : disposition == kDispositionState::Open  ? "open"
                                                            : "none",
                  uint32_t(result));
+    if (content_data.content_type == XContentType::kMarketplaceContent) {
+      std::fprintf(stderr,
+                   "[dlc] XamContentCreate root='%s' file='%s' mode=%u disp=%u license=0x%X result=0x%08X\n",
+                   root_name.c_str(), content_data.file_name().c_str(), uint32_t(flags & 0xF),
+                   static_cast<uint32_t>(disposition), content_license, uint32_t(result));
+      std::fflush(stderr);
+    }
 
     extended_error = X_HRESULT_FROM_WIN32(result);
     length = static_cast<uint32_t>(disposition);
     return result;
   };
+
+  if (content_data.content_type == XContentType::kMarketplaceContent) {
+    std::fprintf(stderr, "[dlc] XamContentCreate queued root='%s' file='%s' flags=0x%X ovl=0x%X\n",
+                 std::string(root_name.value()).c_str(), content_data.file_name().c_str(),
+                 uint32_t(flags), overlapped_ptr.guest_address());
+    std::fflush(stderr);
+  }
 
   if (!overlapped_ptr) {
     uint32_t extended_error, length;

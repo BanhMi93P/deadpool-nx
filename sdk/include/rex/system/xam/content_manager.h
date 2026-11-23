@@ -12,22 +12,23 @@
 #pragma once
 
 #include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
 #include <rex/math.h>
 #include <rex/memory.h>
-#include <rex/string/key.h>
 #include <rex/string.h>
+#include <rex/string/key.h>
 #include <rex/system/xcontent.h>
 #include <rex/system/xtypes.h>
 #include <rex/thread/mutex.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 
 namespace rex {
 namespace system {
 class KernelState;
-}  // namespace system
-}  // namespace rex
+} // namespace system
+} // namespace rex
 
 namespace rex {
 namespace system {
@@ -56,7 +57,7 @@ struct XCONTENT_DATA {
   // only go up to 42 chars!
   uint8_t padding[2];
 
-  bool operator==(const XCONTENT_DATA& other) const {
+  bool operator==(const XCONTENT_DATA &other) const {
     // Package is located via device_id/content_type/file_name, so only need to
     // compare those
     return device_id == other.device_id && content_type == other.content_type &&
@@ -68,9 +69,11 @@ struct XCONTENT_DATA {
   }
 
   std::string file_name() const {
-    std::string value;
-    value.assign(file_name_raw, std::min(strlen(file_name_raw), countof(file_name_raw)));
-    return value;
+    size_t len = 0;
+    while (len < countof(file_name_raw) && file_name_raw[len] != '\0') {
+      ++len;
+    }
+    return std::string(file_name_raw, len);
   }
 
   void set_display_name(const std::u16string_view value) {
@@ -84,7 +87,8 @@ struct XCONTENT_DATA {
 
   void set_file_name(const std::string_view value) {
     std::fill_n(file_name_raw, countof(file_name_raw), 0);
-    rex::string::copy_unterminated(file_name_raw, value, rex::countof(file_name_raw));
+    rex::string::copy_unterminated(file_name_raw, value,
+                                   rex::countof(file_name_raw));
 
     // Some games rely on padding field acting as a null-terminator...
     padding[0] = padding[1] = 0;
@@ -93,11 +97,11 @@ struct XCONTENT_DATA {
 static_assert_size(XCONTENT_DATA, 0x134);
 
 struct XCONTENT_AGGREGATE_DATA : XCONTENT_DATA {
-  be<uint64_t> xuid;  // some titles store XUID here?
+  be<uint64_t> xuid; // some titles store XUID here?
   be<uint32_t> title_id;
 
   XCONTENT_AGGREGATE_DATA() = default;
-  XCONTENT_AGGREGATE_DATA(const XCONTENT_DATA& other) {
+  XCONTENT_AGGREGATE_DATA(const XCONTENT_DATA &other) {
     device_id = other.device_id;
     content_type = other.content_type;
     set_display_name(other.display_name());
@@ -107,31 +111,35 @@ struct XCONTENT_AGGREGATE_DATA : XCONTENT_DATA {
     title_id = kCurrentlyRunningTitleId;
   }
 
-  bool operator==(const XCONTENT_AGGREGATE_DATA& other) const {
+  bool operator==(const XCONTENT_AGGREGATE_DATA &other) const {
     // Package is located via device_id/title_id/content_type/file_name, so only
     // need to compare those
     return device_id == other.device_id && title_id == other.title_id &&
-           content_type == other.content_type && file_name() == other.file_name();
+           content_type == other.content_type &&
+           file_name() == other.file_name();
   }
 };
 static_assert_size(XCONTENT_AGGREGATE_DATA, 0x148);
 
 class ContentPackage {
- public:
-  ContentPackage(KernelState* kernel_state, const std::string_view root_name,
-                 const XCONTENT_AGGREGATE_DATA& data, const std::filesystem::path& package_path);
+public:
+  ContentPackage(KernelState *kernel_state, const std::string_view root_name,
+                 const XCONTENT_AGGREGATE_DATA &data,
+                 const std::filesystem::path &package_path);
   ~ContentPackage();
 
   void LoadPackageLicenseMask(const std::filesystem::path header_path);
 
-  const XCONTENT_AGGREGATE_DATA& GetPackageContentData() const { return content_data_; }
+  const XCONTENT_AGGREGATE_DATA &GetPackageContentData() const {
+    return content_data_;
+  }
 
-  const std::filesystem::path& package_path() const { return package_path_; }
+  const std::filesystem::path &package_path() const { return package_path_; }
 
   uint32_t GetPackageLicense() const { return license_; }
 
- private:
-  KernelState* kernel_state_;
+private:
+  KernelState *kernel_state_;
   std::string root_name_;
   std::string device_path_;
   std::filesystem::path package_path_;
@@ -140,71 +148,86 @@ class ContentPackage {
 };
 
 class ContentManager {
- public:
-  ContentManager(KernelState* kernel_state, const std::filesystem::path& root_path);
+public:
+  ContentManager(KernelState *kernel_state,
+                 const std::filesystem::path &root_path);
   ~ContentManager();
 
-  std::vector<XCONTENT_AGGREGATE_DATA> ListContent(uint32_t device_id, uint64_t xuid,
+  std::vector<XCONTENT_AGGREGATE_DATA> ListContent(uint32_t device_id,
+                                                   uint64_t xuid,
                                                    XContentType content_type,
                                                    uint32_t title_id = -1);
 
-  std::unique_ptr<ContentPackage> ResolvePackage(const std::string_view root_name, uint64_t xuid,
-                                                 const XCONTENT_AGGREGATE_DATA& data);
+  std::unique_ptr<ContentPackage>
+  ResolvePackage(const std::string_view root_name, uint64_t xuid,
+                 const XCONTENT_AGGREGATE_DATA &data);
 
-  bool ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
+  bool ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA &data);
   X_RESULT CreateContent(const std::string_view root_name, uint64_t xuid,
-                         const XCONTENT_AGGREGATE_DATA& data);
+                         const XCONTENT_AGGREGATE_DATA &data);
   X_RESULT OpenContent(const std::string_view root_name, uint64_t xuid,
-                       const XCONTENT_AGGREGATE_DATA& data, uint32_t& content_license);
+                       const XCONTENT_AGGREGATE_DATA &data,
+                       uint32_t &content_license);
   X_RESULT CloseContent(const std::string_view root_name);
-  X_RESULT GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
-                               std::vector<uint8_t>* buffer);
-  X_RESULT SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
+  X_RESULT GetContentThumbnail(uint64_t xuid,
+                               const XCONTENT_AGGREGATE_DATA &data,
+                               std::vector<uint8_t> *buffer);
+  X_RESULT SetContentThumbnail(uint64_t xuid,
+                               const XCONTENT_AGGREGATE_DATA &data,
                                std::vector<uint8_t> buffer);
-  X_RESULT DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
-  X_RESULT UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
-  X_RESULT UnmountAndDeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
+  X_RESULT DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA &data);
+  X_RESULT UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA &data);
+  X_RESULT UnmountAndDeleteContent(uint64_t xuid,
+                                   const XCONTENT_AGGREGATE_DATA &data);
 
   X_RESULT WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
                                   uint32_t license_mask = 0);
-  X_RESULT ReadContentHeaderFile(const std::string_view file_name, uint64_t xuid, uint32_t title_id,
-                                 XContentType content_type, XCONTENT_AGGREGATE_DATA& data) const;
+  X_RESULT ReadContentHeaderFile(const std::string_view file_name,
+                                 uint64_t xuid, uint32_t title_id,
+                                 XContentType content_type,
+                                 XCONTENT_AGGREGATE_DATA &data) const;
 
   std::filesystem::path ResolveGameUserContentPath();
-  bool IsContentOpen(const XCONTENT_AGGREGATE_DATA& data) const;
+  bool IsContentOpen(const XCONTENT_AGGREGATE_DATA &data) const;
   void CloseOpenedFilesFromContent(const std::string_view root_name);
 
   // Returns the host filesystem path for an open content package, or empty.
-  std::filesystem::path GetOpenPackagePath(const std::string_view root_name) const;
+  std::filesystem::path
+  GetOpenPackagePath(const std::string_view root_name) const;
 
   // Installs an STFS content package from an arbitrary host path.
-  // Extracts the package into root_path_/0000000000000000/{title_id}/00000002/{filename}/
-  // and writes a .header file for XAM enumeration.
-  X_RESULT InstallContent(const std::filesystem::path& package_path);
+  // Extracts the package into
+  // root_path_/0000000000000000/{title_id}/00000002/{filename}/ and writes a
+  // .header file for XAM enumeration.
+  X_RESULT InstallContent(const std::filesystem::path &package_path);
 
- private:
-  std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
+private:
+  std::filesystem::path ResolvePackageRoot(uint64_t xuid,
+                                           XContentType content_type,
                                            uint32_t title_id = -1);
-  std::filesystem::path ResolvePackagePath(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
-  std::filesystem::path ResolvePackageHeaderPath(const std::string_view file_name, uint64_t xuid,
-                                                 uint32_t title_id,
-                                                 XContentType content_type) const;
+  std::filesystem::path ResolvePackagePath(uint64_t xuid,
+                                           const XCONTENT_AGGREGATE_DATA &data);
+  std::filesystem::path
+  ResolvePackageHeaderPath(const std::string_view file_name, uint64_t xuid,
+                           uint32_t title_id, XContentType content_type) const;
 
-  std::unordered_map<string::string_key_case, ContentPackage*,
+  std::unordered_map<string::string_key_case, ContentPackage *,
                      string::string_key_case::Hash>::iterator
-  FindOpenPackageByData(const XCONTENT_AGGREGATE_DATA& data);
-  ContentPackage* DetachPackage(std::unordered_map<string::string_key_case, ContentPackage*,
-                                                   string::string_key_case::Hash>::iterator it);
+  FindOpenPackageByData(const XCONTENT_AGGREGATE_DATA &data);
+  ContentPackage *
+  DetachPackage(std::unordered_map<string::string_key_case, ContentPackage *,
+                                   string::string_key_case::Hash>::iterator it);
 
-  KernelState* kernel_state_;
+  KernelState *kernel_state_;
   std::filesystem::path root_path_;
 
   // TODO(benvanik): remove use of global lock, it's bad here!
   rex::thread::global_critical_region global_critical_region_;
-  std::unordered_map<string::string_key_case, ContentPackage*, string::string_key_case::Hash>
+  std::unordered_map<string::string_key_case, ContentPackage *,
+                     string::string_key_case::Hash>
       open_packages_;
 };
 
-}  // namespace xam
-}  // namespace system
-}  // namespace rex
+} // namespace xam
+} // namespace system
+} // namespace rex

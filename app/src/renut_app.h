@@ -52,6 +52,10 @@ void Enable();  // blur-nx (2026-11-17, #220; renut-ultimate port 151): src/blur
 REXCVAR_DECLARE(bool, banjo_show_fps);  // banjo-nx (2026-10-21): profiler/profiler.cpp
 REXCVAR_DECLARE(bool, deadpool_perf_log);  // katamari_keys.cpp: master CPU/GPU/RAM telemetry toggle
 
+namespace deadpool {
+void ApplyLanguageConfig();
+}
+
 REXCVAR_DECLARE(bool, banjo_mesa_disk_cache_off);
 REXCVAR_DECLARE(bool, masseffect_nvk_cache_per_stage);
 REXCVAR_DECLARE(bool, banjo_gpu_boost);
@@ -142,6 +146,7 @@ public:
     // (src/me, from masseffect-nx) and the emulated Xenos GPU plugin is not loaded (ReXApp only loads it
     // when config.graphics is empty).
     void OnPostConfig() override {
+        deadpool::ApplyLanguageConfig();
         if (!REXCVAR_GET(deadpool_perf_log)) return;
         const auto enable_default = [](std::string_view name, std::string_view value) {
             if (rex::cvar::GetFlagSource(name) <= rex::cvar::Source::kConfig) {
@@ -152,6 +157,9 @@ public:
         enable_default("log_file_writer", "true");
         enable_default("switch_profile_stacks", "true");
         enable_default("renut_memory_report", "30.0");
+        enable_default("switch_perf_count_calls", "true");
+        enable_default("masseffect_io_summary_s", "15");
+        enable_default("masseffect_io_warning_ms", "8");
     }
 
     void OnPreSetup(rex::RuntimeConfig& config) override {

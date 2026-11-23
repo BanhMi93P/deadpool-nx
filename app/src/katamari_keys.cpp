@@ -5,16 +5,24 @@
 // Each comes back with its own file once it has been moved to Beautiful Katamari's functions (docs/katamari-notes.md).
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "profiler/profiler.h"
 #include "renut_engine/display_sync.h"
+
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
 
 // N&B's XAudio natives (its reverb and sample-rate converter at N&B's addresses).
 REXCVAR_DEFINE_BOOL(banjo_native_reverb, false, "Katamari/Not built", "N&B's native XAudio reverb (not in this port)")
@@ -120,6 +128,124 @@ std::atomic<uint64_t> g_banjo_game_frames{0};
 REXCVAR_DEFINE_BOOL(deadpool_perf_log, false, "Katamari/Debug",
                     "Enable comprehensive CPU, GPU, memory, stack-sampling, and workload performance logging")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+REXCVAR_DEFINE_STRING(
+    language, "english", "Kernel",
+    "Game language: auto (Switch system language), english, german, french, spanish, or italian");
+
+namespace deadpool {
+
+namespace {
+
+uint32_t DetectSwitchLanguageId() {
+#if defined(__SWITCH__)
+  Result rc = setInitialize();
+  if (R_FAILED(rc)) {
+    REXLOG_WARN("Deadpool language: setInitialize failed (0x{:08X}), falling back to English", rc);
+    return 1;
+  }
+  u64 lang_code = 0;
+  SetLanguage sys_lang = SetLanguage_ENUS;
+  rc = setGetSystemLanguage(&lang_code);
+  if (R_SUCCEEDED(rc)) {
+    rc = setMakeLanguage(lang_code, &sys_lang);
+  }
+  setExit();
+  if (R_FAILED(rc)) {
+    REXLOG_WARN("Deadpool language: Switch system language query failed (0x{:08X}), falling back to English", rc);
+    return 1;
+  }
+  switch (sys_lang) {
+    case SetLanguage_DE:
+      return 3;  // DEU
+    case SetLanguage_FR:
+    case SetLanguage_FRCA:
+      return 4;  // FRA
+    case SetLanguage_ES:
+    case SetLanguage_ES419:
+      return 5;  // ESN
+    case SetLanguage_IT:
+      return 6;  // ITA
+    default:
+      return 1;  // INT (English)
+  }
+#else
+  return 1;
+#endif
+}
+
+std::string NormalizeLanguageValue(std::string value) {
+  auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+  while (!value.empty() && is_space(static_cast<unsigned char>(value.front()))) {
+    value.erase(value.begin());
+  }
+  while (!value.empty() && is_space(static_cast<unsigned char>(value.back()))) {
+    value.pop_back();
+  }
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value;
+}
+
+uint32_t ResolveLanguageId(std::string_view raw, bool* valid = nullptr) {
+  const std::string key = NormalizeLanguageValue(std::string(raw));
+  if (valid) *valid = true;
+  if (key == "auto" || key == "system" || key == "0") {
+    return DetectSwitchLanguageId();
+  }
+  if (key == "english" || key == "en" || key == "int" || key == "1") {
+    return 1;
+  }
+  if (key == "german" || key == "de" || key == "deu" || key == "deutsch" || key == "3") {
+    return 3;
+  }
+  if (key == "french" || key == "fr" || key == "fra" || key == "francais" || key == "fran\xc3\xa7" "ais" || key == "4") {
+    return 4;
+  }
+  if (key == "spanish" || key == "es" || key == "esn" || key == "espanol" || key == "espa\xc3\xb1" "ol" || key == "5") {
+    return 5;
+  }
+  if (key == "italian" || key == "it" || key == "ita" || key == "italiano" || key == "6") {
+    return 6;
+  }
+  if (valid) *valid = false;
+  return 1;
+}
+
+const char* LanguageCodeName(uint32_t id) {
+  switch (id) {
+    case 3: return "DEU (German)";
+    case 4: return "FRA (French)";
+    case 5: return "ESN (Spanish)";
+    case 6: return "ITA (Italian)";
+    default: return "INT (English)";
+  }
+}
+
+}  // namespace
+
+void ApplyLanguageConfig() {
+  const auto lang_src = rex::cvar::GetFlagSource("language");
+  const auto user_lang_src = rex::cvar::GetFlagSource("user_language");
+  if (user_lang_src >= rex::cvar::Source::kConfig && user_lang_src > lang_src) {
+    return;
+  }
+  if (lang_src < rex::cvar::Source::kConfig && user_lang_src >= rex::cvar::Source::kConfig) {
+    return;
+  }
+
+  const std::string raw = REXCVAR_GET(language);
+  bool ok = false;
+  const uint32_t resolved = ResolveLanguageId(raw, &ok);
+  if (!ok) {
+    REXLOG_WARN("Deadpool language '{}' is unsupported (use auto, english, german, french, spanish, italian); using English",
+                raw);
+  }
+  rex::cvar::SetFlagByName("user_language", std::to_string(resolved));
+  REXLOG_INFO("Deadpool language: '{}' -> {} (XGetLanguage={})", raw, LanguageCodeName(resolved), resolved);
+}
+
+}  // namespace deadpool
 
 
 // g_banjo_store_cards (whether the generated code marks the store cards) is cpu/banjo_hot_guest.cpp's again.

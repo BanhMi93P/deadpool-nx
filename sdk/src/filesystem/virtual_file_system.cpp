@@ -247,7 +247,8 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
       const auto* host_path_entry = dynamic_cast<const HostPathEntry*>(parent_entry);
       if (host_path_entry) {
         const auto file_path = host_path_entry->host_path() / rex::to_path(entry->name());
-        if (!std::filesystem::exists(file_path)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(file_path, ec) || ec) {
           entry->Delete();
           entry = nullptr;
         }

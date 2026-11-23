@@ -186,11 +186,11 @@ REXCVAR_DEFINE_BOOL(banjo_cpu_guest_cas_no_barrier, true, "Banjo/Enhancements",
 // relaxed exclusives (#163) and its lwsync / eieio as `dmb ishld` + `dmb ishst` / `dmb ishst` (#164 / #165), each exact
 // with respect to the 360's memory model (lwarx / stwcx. order nothing there; lwsync does not order a store before a
 // later load; eieio orders stores). false gives the old form back (AArch64 only; the PC's x86 forms do not change).
-REXCVAR_DEFINE_BOOL(blur_guest_cas_relaxed, true, "Banjo/Enhancements",
+REXCVAR_DEFINE_BOOL(blur_guest_cas_relaxed, false, "Banjo/Enhancements",
                     "The game's compare-and-swap as relaxed exclusives (ldxr / stxr), as the 360's lwarx / stwcx.; "
                     "false: the sequentially consistent loop (ldaxr / stlxr) as before")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(blur_guest_fences_split, true, "Banjo/Enhancements",
+REXCVAR_DEFINE_BOOL(blur_guest_fences_split, false, "Banjo/Enhancements",
                     "The game's lwsync as dmb ishld + dmb ishst and eieio as dmb ishst (the PowerPC orderings); "
                     "false: a full dmb ish for both, as before")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

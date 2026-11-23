@@ -8,8 +8,8 @@ msaa_level = 1
 # Frame rate cap: "Off" (the game's own, uncapped as on the Xbox 360) or "30".
 frame_cap = "Off"
 
-# Language: 1 = English, 2 = Japanese.
-user_language = 1
+# Language: "auto" (Switch system language), "english", "german", "french", "spanish", "italian"
+language = "english"
 
 # Keep guest worker threads free across CPU cores.
 banjo_renut_core_layout = false

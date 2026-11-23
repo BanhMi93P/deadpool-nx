@@ -1,3 +1,8 @@
+# Deadpool Switch configuration
+# Language: "auto" (Switch system language), "english", "german", "french", "spanish", "italian"
+language = "english"
+
+# Display & Graphics
 banjo_renderer = "renut"
 renut_gpu_backend = "deko3d"
 banjo_renut_core_layout = false
@@ -5,6 +10,10 @@ banjo_renut_resolve_skip = true
 banjo_renut_alpha_to_mask_test = false
 banjo_renut_render_height_handheld = 720
 banjo_renut_render_height_docked = 1080
+
+# DLC & Controls
+dlc_enabled = true
+renut_dlc_folder = "dlc"
 license_mask = 1
 input_xbox_layout = false
 input_joycon_sideways = true

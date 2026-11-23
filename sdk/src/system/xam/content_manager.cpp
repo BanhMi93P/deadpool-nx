@@ -10,6 +10,7 @@
  */
 
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <queue>
 #include <string>
@@ -54,6 +55,8 @@ REXCVAR_DEFINE_STRING(content_backup_root, "", "Kernel",
 REXCVAR_DEFINE_STRING(dlc_hidden, "", "Kernel",
                       "DLC packages the game is not shown: display names or package file names, separated by ';' "
                       "(any case). They stay installed. Empty = every installed package is shown");
+REXCVAR_DEFINE_BOOL(dlc_enabled, true, "Kernel",
+                    "Enable installing and exposing Xbox 360 marketplace DLC packages.");
 
 namespace rex {
 namespace system {
@@ -242,7 +245,8 @@ ContentPackage::~ContentPackage() {
 }
 
 void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_path) {
-  if (!std::filesystem::exists(header_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(header_path, ec) || ec) {
     return;
   }
 
@@ -251,8 +255,8 @@ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_p
     return;
   }
 
-  auto file_size = std::filesystem::file_size(header_path);
-  if (file_size < sizeof(XCONTENT_AGGREGATE_DATA) + sizeof(license_)) {
+  auto file_size = std::filesystem::file_size(header_path, ec);
+  if (ec || file_size < sizeof(XCONTENT_AGGREGATE_DATA) + sizeof(license_)) {
     fclose(file);
     return;
   }
@@ -322,6 +326,9 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
                                                                  XContentType content_type,
                                                                  uint32_t title_id) {
   std::vector<XCONTENT_AGGREGATE_DATA> result;
+  if (content_type == XContentType::kMarketplaceContent && !REXCVAR_GET(dlc_enabled)) {
+    return result;
+  }
 
   if (title_id == kCurrentlyRunningTitleId) {
     title_id = kernel_state_->title_id();
@@ -364,6 +371,17 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
     });
   }
 
+  if (content_type == XContentType::kMarketplaceContent) {
+    std::fprintf(stderr, "[dlc] ListContent xuid=%016llX title=%08X path='%s' -> %zu item(s)\n",
+                 static_cast<unsigned long long>(xuid), title_id,
+                 rex::path_to_utf8(package_root).c_str(), result.size());
+    for (const auto& entry : result) {
+      std::fprintf(stderr, "[dlc]   item file='%s' name='%s'\n", entry.file_name().c_str(),
+                   rex::string::to_utf8(entry.display_name()).c_str());
+    }
+    std::fflush(stderr);
+  }
+
   // What the game sees when it asks for the list of saves. If a profile that exists on disk does not show
   // up here, the problem is the enumeration; if it shows up and is then reported as damaged, the problem
   // is its contents.
@@ -380,7 +398,8 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
 std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
     const std::string_view root_name, uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
   auto package_path = ResolvePackagePath(xuid, data);
-  if (!std::filesystem::exists(package_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(package_path, ec) || ec) {
     return nullptr;
   }
   auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path);
@@ -389,7 +408,8 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
 
 bool ContentManager::ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
   auto path = ResolvePackagePath(xuid, data);
-  return std::filesystem::exists(path);
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && !ec;
 }
 
 X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
@@ -406,8 +426,15 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
       ResolvePackageHeaderPath(data.file_name(), used_xuid, data.title_id, data.content_type);
   auto parent_path = header_path.parent_path();
 
-  if (!std::filesystem::exists(parent_path)) {
-    if (!std::filesystem::create_directories(parent_path)) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(parent_path, ec)) {
+    ec.clear();
+    std::filesystem::create_directories(parent_path, ec);
+    std::error_code check_ec;
+    if (ec && !std::filesystem::is_directory(parent_path, check_ec)) {
+      std::fprintf(stderr, "[dlc] WriteContentHeaderFile: mkdir '%s' failed (ec=%d)\n",
+                   rex::path_to_utf8(parent_path).c_str(), ec.value());
+      std::fflush(stderr);
       return X_ERROR_ACCESS_DENIED;
     }
   }
@@ -416,16 +443,26 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
 
   auto file = rex::filesystem::OpenFile(header_path, "wb");
   if (!file) {
+    std::fprintf(stderr, "[dlc] WriteContentHeaderFile: open '%s' failed\n",
+                 rex::path_to_utf8(header_path).c_str());
+    std::fflush(stderr);
     return X_ERROR_FILE_NOT_FOUND;
   }
-  fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
-  if (license_mask != 0) {
-    fwrite(&license_mask, 1, sizeof(license_mask), file);
+  bool ok = fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file) == sizeof(XCONTENT_AGGREGATE_DATA);
+  if (ok && license_mask != 0) {
+    ok = fwrite(&license_mask, 1, sizeof(license_mask), file) == sizeof(license_mask);
   }
-  const bool ok = fclose(file) == 0;
+  if (fclose(file) != 0) {
+    ok = false;
+  }
+  if (data.content_type == XContentType::kMarketplaceContent) {
+    std::fprintf(stderr, "[dlc] WriteContentHeaderFile '%s' license=0x%X ok=%d\n",
+                 rex::path_to_utf8(header_path).c_str(), license_mask, ok ? 1 : 0);
+    std::fflush(stderr);
+  }
   REXSYS_INFO("[save] header of '{}' {} in {}", data.file_name(),
               ok ? "written" : "FAILED on close", rex::path_to_utf8(header_path));
-  return X_ERROR_SUCCESS;
+  return ok ? X_ERROR_SUCCESS : X_ERROR_ACCESS_DENIED;
 }
 
 X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name, uint64_t xuid,
@@ -434,7 +471,8 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
   auto header_file_path = ResolvePackageHeaderPath(file_name, xuid, title_id, content_type);
   constexpr uint32_t header_size = sizeof(XCONTENT_AGGREGATE_DATA);
 
-  if (!std::filesystem::exists(header_file_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(header_file_path, ec) || ec) {
     return X_ERROR_FILE_NOT_FOUND;
   }
 
@@ -443,8 +481,8 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
     return X_ERROR_FILE_NOT_FOUND;
   }
 
-  auto file_size = std::filesystem::file_size(header_file_path);
-  if (file_size < header_size) {
+  auto file_size = std::filesystem::file_size(header_file_path, ec);
+  if (ec || file_size < header_size) {
     fclose(file);
     return X_ERROR_FILE_NOT_FOUND;
   }
@@ -473,14 +511,21 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
   auto package_path = ResolvePackagePath(xuid, data);
   REXSYS_INFO("[save] create '{}' (root {}) in {}", data.file_name(), root_name,
               rex::path_to_utf8(package_path));
-  if (std::filesystem::exists(package_path)) {
+  std::error_code ec;
+  if (std::filesystem::exists(package_path, ec) && !ec) {
     REXSYS_WARN("[save] create '{}': it already existed, returning ALREADY_EXISTS", data.file_name());
     return X_ERROR_ALREADY_EXISTS;
   }
-  if (!std::filesystem::create_directories(package_path)) {
-    REXSYS_ERROR("[save] create '{}': could NOT create {}", data.file_name(),
-                 rex::path_to_utf8(package_path));
-    return X_ERROR_ACCESS_DENIED;
+  ec.clear();
+  if (!std::filesystem::is_directory(package_path, ec)) {
+    ec.clear();
+    std::filesystem::create_directories(package_path, ec);
+    std::error_code check_ec;
+    if (ec && !std::filesystem::is_directory(package_path, check_ec)) {
+      REXSYS_ERROR("[save] create '{}': could NOT create {} (ec={})", data.file_name(),
+                   rex::path_to_utf8(package_path), ec.value());
+      return X_ERROR_ACCESS_DENIED;
+    }
   }
   auto package = ResolvePackage(root_name, xuid, data);
   assert_not_null(package);
@@ -506,7 +551,8 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   }
 
   auto package_path = ResolvePackagePath(xuid, data);
-  if (!std::filesystem::exists(package_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(package_path, ec) || ec) {
     REXSYS_WARN("[save] open '{}': {} does not exist", data.file_name(),
                 rex::path_to_utf8(package_path));
     return X_ERROR_FILE_NOT_FOUND;
@@ -521,6 +567,17 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
   content_license = package->GetPackageLicense();
+  if (content_license == 0 && data.content_type == XContentType::kMarketplaceContent) {
+    content_license = 1;
+  }
+  if (data.content_type == XContentType::kMarketplaceContent) {
+    const auto entries = rex::filesystem::ListFiles(package_path);
+    std::fprintf(stderr,
+                 "[dlc] OpenContent root='%s' file='%s' path='%s' license=0x%X entries=%zu\n",
+                 std::string(root_name).c_str(), data.file_name().c_str(),
+                 rex::path_to_utf8(package_path).c_str(), content_license, entries.size());
+    std::fflush(stderr);
+  }
 
   {
     auto global_lock = global_critical_region_.Acquire();
@@ -745,63 +802,132 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
 
 static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
                              const std::filesystem::path& base_path) {
-  auto dest_path = base_path / rex::to_path(rex::string::utf8_fix_path_separators(entry->path()));
+  std::string rel = rex::string::utf8_fix_path_separators(entry->path());
+  while (!rel.empty() && (rel.front() == '/' || rel.front() == '\\')) {
+    rel.erase(rel.begin());
+  }
+  while (!rel.empty() && (rel.back() == '/' || rel.back() == '\\')) {
+    rel.pop_back();
+  }
 
   if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
+    if (rel.empty()) {
+      return X_ERROR_SUCCESS;
+    }
+    auto dest_path = base_path / rex::to_path(rel);
     std::error_code ec;
+    if (std::filesystem::is_directory(dest_path, ec)) {
+      return X_ERROR_SUCCESS;
+    }
+    ec.clear();
     std::filesystem::create_directories(dest_path, ec);
-    if (ec) {
+    std::error_code check_ec;
+    if (ec && !std::filesystem::is_directory(dest_path, check_ec)) {
+      std::fprintf(stderr, "[dlc] ExtractEntry: mkdir '%s' failed (ec=%d)\n",
+                   rex::path_to_utf8(dest_path).c_str(), ec.value());
+      std::fflush(stderr);
       return X_ERROR_ACCESS_DENIED;
     }
     return X_ERROR_SUCCESS;
   }
 
+  if (rel.empty()) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+  auto dest_path = base_path / rex::to_path(rel);
+
   // Ensure parent directory exists
-  std::error_code ec;
-  std::filesystem::create_directories(dest_path.parent_path(), ec);
+  auto parent_path = dest_path.parent_path();
+  if (!parent_path.empty()) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(parent_path, ec)) {
+      ec.clear();
+      std::filesystem::create_directories(parent_path, ec);
+      std::error_code check_ec;
+      if (ec && !std::filesystem::is_directory(parent_path, check_ec)) {
+        std::fprintf(stderr, "[dlc] ExtractEntry: parent mkdir '%s' failed (ec=%d)\n",
+                     rex::path_to_utf8(parent_path).c_str(), ec.value());
+        std::fflush(stderr);
+        return X_ERROR_ACCESS_DENIED;
+      }
+    }
+  }
 
   rex::filesystem::File* in_file = nullptr;
   X_STATUS status = entry->Open(rex::filesystem::FileAccess::kFileReadData, &in_file);
-  if (status != X_STATUS_SUCCESS) {
+  if (status != X_STATUS_SUCCESS || !in_file) {
+    std::fprintf(stderr, "[dlc] ExtractEntry: open stfs '%s' failed (0x%08X)\n", rel.c_str(),
+                 uint32_t(status));
+    std::fflush(stderr);
     return X_ERROR_ACCESS_DENIED;
   }
 
   auto out_file = rex::filesystem::OpenFile(dest_path, "wb");
   if (!out_file) {
+    std::fprintf(stderr, "[dlc] ExtractEntry: open host '%s' failed\n",
+                 rex::path_to_utf8(dest_path).c_str());
+    std::fflush(stderr);
     in_file->Destroy();
     return X_ERROR_ACCESS_DENIED;
   }
 
-  constexpr size_t kBufferSize = 4 * 1024 * 1024;  // 4 MiB
-  auto buffer = std::make_unique<uint8_t[]>(kBufferSize);
+  constexpr size_t kBufferSize = 1 * 1024 * 1024;  // 1 MiB
   size_t remaining = entry->size();
+  std::unique_ptr<uint8_t[]> buffer;
+  if (remaining > 0) {
+    buffer = std::make_unique<uint8_t[]>(std::min<size_t>(remaining, kBufferSize));
+  }
   size_t offset = 0;
+  bool io_ok = true;
 
   while (remaining > 0) {
     size_t bytes_read = 0;
     size_t to_read = std::min(remaining, kBufferSize);
-    in_file->ReadSync(std::span<uint8_t>(buffer.get(), to_read), offset, &bytes_read);
-    if (bytes_read == 0) {
+    X_STATUS read_status =
+        in_file->ReadSync(std::span<uint8_t>(buffer.get(), to_read), offset, &bytes_read);
+    if (read_status != X_STATUS_SUCCESS || bytes_read == 0) {
+      std::fprintf(stderr, "[dlc] ExtractEntry: read '%s' failed at %zu (0x%08X)\n", rel.c_str(),
+                   offset, uint32_t(read_status));
+      std::fflush(stderr);
+      io_ok = false;
       break;
     }
-    fwrite(buffer.get(), 1, bytes_read, out_file);
+    if (fwrite(buffer.get(), 1, bytes_read, out_file) != bytes_read) {
+      std::fprintf(stderr, "[dlc] ExtractEntry: write '%s' failed at %zu\n",
+                   rex::path_to_utf8(dest_path).c_str(), offset);
+      std::fflush(stderr);
+      io_ok = false;
+      break;
+    }
     offset += bytes_read;
     remaining -= bytes_read;
   }
 
-  fclose(out_file);
+  if (fclose(out_file) != 0) {
+    std::fprintf(stderr, "[dlc] ExtractEntry: close '%s' failed\n",
+                 rex::path_to_utf8(dest_path).c_str());
+    std::fflush(stderr);
+    io_ok = false;
+  }
   in_file->Destroy();
-  return X_ERROR_SUCCESS;
+  return io_ok ? X_ERROR_SUCCESS : X_ERROR_ACCESS_DENIED;
 }
 
 X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_path) {
-  if (!std::filesystem::exists(package_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(package_path, ec) || ec) {
+    std::fprintf(stderr, "[dlc] InstallContent: package '%s' not found (ec=%d)\n",
+                 rex::path_to_utf8(package_path).c_str(), ec.value());
+    std::fflush(stderr);
     return X_ERROR_FILE_NOT_FOUND;
   }
 
   // Mount the STFS package as a virtual filesystem device
   auto device = std::make_unique<rex::filesystem::StfsContainerDevice>("", package_path);
   if (!device->Initialize()) {
+    std::fprintf(stderr, "[dlc] InstallContent: StfsContainerDevice::Initialize failed for '%s'\n",
+                 rex::path_to_utf8(package_path).c_str());
+    std::fflush(stderr);
     return X_ERROR_ACCESS_DENIED;
   }
 
@@ -827,20 +953,31 @@ X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_pat
   auto install_path = ResolvePackagePath(0, content_data);
 
   // Create destination directory
-  std::error_code ec;
-  std::filesystem::create_directories(install_path, ec);
-  if (ec) {
-    return X_ERROR_ACCESS_DENIED;
+  ec.clear();
+  if (!std::filesystem::is_directory(install_path, ec)) {
+    ec.clear();
+    std::filesystem::create_directories(install_path, ec);
+    std::error_code check_ec;
+    if (ec && !std::filesystem::is_directory(install_path, check_ec)) {
+      std::fprintf(stderr, "[dlc] InstallContent: mkdir '%s' failed (ec=%d)\n",
+                   rex::path_to_utf8(install_path).c_str(), ec.value());
+      std::fflush(stderr);
+      return X_ERROR_ACCESS_DENIED;
+    }
   }
 
   // Extract all files breadth-first
   auto* root = device->ResolvePath("");
   if (!root) {
+    std::fprintf(stderr, "[dlc] InstallContent: root entry is null for '%s'\n",
+                 rex::path_to_utf8(package_path).c_str());
+    std::fflush(stderr);
     return X_ERROR_ACCESS_DENIED;
   }
 
   std::queue<rex::filesystem::Entry*> queue;
   queue.push(root);
+  size_t extracted_files = 0;
 
   while (!queue.empty()) {
     auto* entry = queue.front();
@@ -854,6 +991,9 @@ X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_pat
     if (result != X_ERROR_SUCCESS) {
       return result;
     }
+    if (!(entry->attributes() & rex::filesystem::kFileAttributeDirectory)) {
+      ++extracted_files;
+    }
   }
 
   // Compute license mask from STFS header licenses
@@ -863,6 +1003,14 @@ X_RESULT ContentManager::InstallContent(const std::filesystem::path& package_pat
       license_mask |= device->header().header.licenses[i].license_bits;
     }
   }
+  if (license_mask == 0) {
+    license_mask = 1;
+  }
+
+  std::fprintf(stderr, "[dlc] InstallContent: extracted %zu file(s) from '%s' -> '%s' (license=0x%X)\n",
+               extracted_files, rex::path_to_utf8(package_path).c_str(),
+               rex::path_to_utf8(install_path).c_str(), license_mask);
+  std::fflush(stderr);
 
   // Write .header file
   return WriteContentHeaderFile(0, content_data, license_mask);

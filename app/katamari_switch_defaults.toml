@@ -235,6 +235,27 @@ banjo_renut_core_layout = false
 banjo_renut_anisotropy_cap = 2
 banjo_renut_deferred_chain = true
 audio_xma_kick_without_lock = true
-audio_switch_pump_pairs = true
+audio_switch_pump_pairs = false
+audio_switch_pump_frames = 4
+banjo_deko3d_background_compile_share = 5
+switch_perf_count_calls = false
+masseffect_io_summary_s = 0
+masseffect_io_warning_ms = 0
+
+# Crash, memory-ordering & IO safety fixes
+blur_guest_cas_relaxed = false
+blur_guest_fences_split = false
+deadpool_acquire_async_read = true
+kernel_scatter_read_offset_zero = true
+
+# Renderer, texture & pacing safety defaults
+banjo_deko3d_native_16bit = false
+banjo_renut_dynamic_texture_rows = false
+banjo_renut_keep_unused_targets = false
+blur_renut_texture_pool = false
+banjo_renut_stream_redeem = false
+banjo_async_present = false
+blur_small_alloc_mb = 0
+
 license_mask = 1
 deadpool_perf_log = false
