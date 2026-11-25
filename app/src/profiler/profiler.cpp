@@ -107,7 +107,7 @@ void RecordDraw(double ms) { Store(Series::kDraw, ms); }
 void RecordLimiterWait(double ms) {
   Store(Series::kLimiterWait, ms);
   if (ms > 0.0)
-    renut::frame_stats::OnGameThreadWait(ms);
+    renut::frame_stats::OnGameThreadWait(ms, 3);
 }
 void SetGpuFrameMs(double ms) { Store(Series::kGpuFrame, ms); }
 void SetRenderThreadMs(double ms) { Store(Series::kRenderThread, ms); }
@@ -161,6 +161,32 @@ std::string ThreadCpuUsage() {
   std::string out;
 #if REX_PLATFORM_SWITCH
   os::switch_cpu_profiler::AppendThreadCpuUsage(out);
+#endif
+  return out;
+}
+
+ProcessCpuUsage QueryProcessCpuUsage() {
+  ProcessCpuUsage out;
+#if REX_PLATFORM_SWITCH
+  static std::mutex s_cpu_mutex;
+  static uint64_t s_last_thread_ticks = 0;
+  static uint64_t s_last_wall_ticks = 0;
+  static ProcessCpuUsage s_cached{};
+  std::lock_guard<std::mutex> lock(s_cpu_mutex);
+  const uint64_t wall = armGetSystemTick();
+  const uint64_t freq = armGetSystemTickFreq();
+  if (s_last_wall_ticks == 0 || wall - s_last_wall_ticks >= freq) {
+    const uint64_t ticks = os::switch_cpu_profiler::TotalThreadTicks();
+    if (s_last_wall_ticks != 0 && wall > s_last_wall_ticks && ticks >= s_last_thread_ticks) {
+      const double pct = 100.0 * double(ticks - s_last_thread_ticks) / double(wall - s_last_wall_ticks);
+      s_cached.valid = true;
+      s_cached.pct_one_core = pct;
+      s_cached.pct_four_cores = pct / 4.0;
+    }
+    s_last_thread_ticks = ticks;
+    s_last_wall_ticks = wall;
+  }
+  out = s_cached;
 #endif
   return out;
 }

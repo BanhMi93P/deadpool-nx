@@ -395,19 +395,11 @@ namespace {
 // the GPU and the kernel's own workers. This is the scheme MarathonRecomp-NX
 // ships with. Host threads are told apart by the name their owner gives them
 // before Create().
-bool IsDeadpoolAudioGuestThread(uint32_t start_address) {
-  return start_address == 0x83100700 || start_address == 0x82D27FD8 ||
-         start_address == 0x82D7FD28 || start_address == 0x82D7A390;
-}
-
-int SwitchPriorityFor(bool guest_thread, std::string_view name,
-                      uint32_t start_address = 0) {
+int SwitchPriorityFor(bool guest_thread, std::string_view name) {
   if (guest_thread) {
-    // Deadpool Wwise Audio Mixer / XAudio render threads: must run at audio
-    // priority (0x2B).
-    if (IsDeadpoolAudioGuestThread(start_address)) {
-      return REX_SWITCH_PRIO_AUDIO;
-    }
+    // All recompiled guest PPC threads (including Deadpool Wwise/XAudio mixer
+    // threads) must stay at Horizon's time-sliced priority 0x3B so a spin-wait
+    // never causes priority-inversion deadlocks with Core 0-2 or Horizon OS.
     return REX_SWITCH_PRIO_GUEST;
   }
   // set_name() stores the name with the handle appended ("Audio Worker
@@ -535,26 +527,12 @@ X_STATUS XThread::Create() {
   thread_ = rex::thread::Thread::Create(params, [this]() {
     rex::initialize_seh_thread();
 #if REX_PLATFORM_SWITCH
-    const bool audio_guest =
-        guest_thread_ &&
-        IsDeadpoolAudioGuestThread(creation_params_.start_address);
-    RexSwitchSetCurrentThreadPriority(SwitchPriorityFor(
-        guest_thread_, thread_name_, creation_params_.start_address));
-    // banjo-nx (2026-10-27): with four cores granted, the audio threads go to
-    // the system core (NetherSX2_nx's layout: threading_switch.h,
-    // banjo_system_core), at the same priority (0x2B; the output thread is
-    // above them). (The XMA Decoder only with banjo_system_core_xma: the first
-    // four-core console run had core 3 full.)
-    if (audio_guest) {
-      if (!RexSwitchMoveCurrentThreadToSystemCore(REX_SWITCH_PRIO_AUDIO)) {
-        // Keep 0x2B audio mixer off Core 1 (render_thread, 0x2C) in 3-core
-        // mode.
-        RexSwitchSetCurrentThreadMask(2, 0x5);
-      }
-    } else if (!guest_thread_ &&
-               (std::string_view(thread_name_).starts_with("Audio Worker") ||
-                (std::string_view(thread_name_).starts_with("XMA Decoder") &&
-                 RexSwitchSystemCoreXma()))) {
+    RexSwitchSetCurrentThreadPriority(
+        SwitchPriorityFor(guest_thread_, thread_name_));
+    if (!guest_thread_ &&
+        (std::string_view(thread_name_).starts_with("Audio Worker") ||
+         (std::string_view(thread_name_).starts_with("XMA Decoder") &&
+          RexSwitchSystemCoreXma()))) {
       (void)RexSwitchMoveCurrentThreadToSystemCore(REX_SWITCH_PRIO_AUDIO);
     }
     // banjo-nx (2026-10-20, from sa2-nx): known to the pthread layer by its
@@ -564,7 +542,7 @@ X_STATUS XThread::Create() {
     RexSwitchRegisterCurrentThread();
     // banjo-nx (2026-10-20, from sa2-nx): a guest thread made after the layout
     // was set takes the other guest threads' cores.
-    if (guest_thread_ && !main_thread_ && !audio_guest) {
+    if (guest_thread_ && !main_thread_) {
       t_layout_applied = g_guest_layout_gen.load(
           std::memory_order_acquire); // dishonored-nx (port 103): applied here
       const uint32_t mask = g_guest_core_mask.load(std::memory_order_acquire);
@@ -582,7 +560,7 @@ X_STATUS XThread::Create() {
         RexSwitchSetCurrentThreadMask(core, uint64_t(1) << core);
     }
     t_guest_kind =
-        (guest_thread_ && !audio_guest)
+        guest_thread_
             ? (main_thread_ ? 1 : 2)
             : 0; // dishonored-nx (port 103): ApplyGuestCoreLayoutAtWait
 #endif
@@ -1048,11 +1026,6 @@ void XThread::SetPriority(int32_t increment) {
   }
   if (!REXCVAR_GET(ignore_thread_priorities)) {
     thread_->set_priority(target_priority);
-#if REX_PLATFORM_SWITCH
-    if (increment >= 16) {
-      RexSwitchSetCurrentThreadPriority(REX_SWITCH_PRIO_AUDIO);
-    }
-#endif
   }
 }
 

@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <unistd.h>  // ftruncate (LoadCache)
@@ -17,6 +18,7 @@
 #include <rex/logging.h>
 #include <zstd.h>
 
+#include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/banjo_renut_tuning.h"
 #include "renut_engine/gpu/ultimate.h"
 #include "renut_engine/gpu/sasrt_gpu_round.h"  // sasrt-nx (2026-11-08)
@@ -33,6 +35,8 @@ REXCVAR_DEFINE_BOOL(sasrt_deko3d_diag_barriers, false, "SASRT/Diagnostics",
                     "deko3d renderer, a measurement: the barriers emitted counted by what they wait for and why (the "
                     "layouts and stages of every call merged into them); the 10 s deko3d line then lists the commonest "
                     "causes since the start");
+REXCVAR_DEFINE_BOOL(banjo_deko3d_log_misses, false, "Banjo/Diagnostics",
+                    "deko3d renderer: log each DKSH shader cache miss key once for offline precompile");
 // renut-ultimate (2026-11-10, port 59, from LostOdysseyRecomp ff013164): descriptor writes. LostOdysseyRecomp writes a
 // descriptor set for every draw, and these two were about 3 % of its command thread; Renut writes a texture slot when a
 // texture, view or surface is made (a bindless table), so far fewer writes go through here.
@@ -308,6 +312,7 @@ struct DkshCache {
   bool read_only = false;  // a write failed: no more records
   uint64_t added = 0, hits = 0, misses = 0;
   std::string path;
+  std::unordered_set<uint64_t> logged_misses;
 };
 DkshCache g_cache;
 
@@ -525,6 +530,9 @@ void InstallShaderCache() {
         auto it = c.index.find(key);
         if (it == c.index.end() || !c.file) {
           c.misses++;
+          if (REXCVAR_GET(banjo_deko3d_log_misses) && c.logged_misses.insert(key).second) {
+            REXLOG_INFO("[deko3d] DKSH cache miss: key {:016x} (misses {})", key, c.misses);
+          }
           return false;
         }
         dksh.resize(it->second.second);
@@ -572,6 +580,8 @@ void InstallShaderCache() {
 
 // sasrt-nx (2026-11-08, sasrt_deko3d_diag_trace): one frame's command stream every 600 frames.
 void TraceFrameBoundary() {
+  if (::renut::gpu::gpu_profile::FrameDiagActive())
+    return;
   static const bool on = REXCVAR_GET(sasrt_deko3d_diag_trace);
   if (!on)
     return;

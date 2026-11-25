@@ -27,6 +27,7 @@
 #include <chrono>
 #if defined(__SWITCH__)
 #include <switch.h>  // blur-nx (2026-11-13, M-37): armGetSystemTick
+extern "C" void RexSwitchThrottleSystemCoreSlice(uint64_t active_ticks);
 #endif
 
 extern "C" {
@@ -377,6 +378,9 @@ void ReportXma() {
 
 void XmaDecoder::WorkerThreadMain() {
   while (worker_running_) {
+#if defined(__SWITCH__)
+    const u64 slice_t0 = armGetSystemTick();
+#endif
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
     // First the ones a kick has just enabled: they are reached without walking all 320 or touching their
@@ -452,6 +456,12 @@ void XmaDecoder::WorkerThreadMain() {
       pause_fence_.Signal();
       resume_fence_.Wait();
     }
+
+#if defined(__SWITCH__)
+    if (did_work) {
+      RexSwitchThrottleSystemCoreSlice(armGetSystemTick() - slice_t0);
+    }
+#endif
 
     if (did_work) {
       continue;

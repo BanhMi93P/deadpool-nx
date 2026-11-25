@@ -191,6 +191,8 @@ if(PLUME_PLATFORM_SWITCH)
             "${CMAKE_CURRENT_SOURCE_DIR}/plume_deko3d.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/plume_deko3d_commands.cpp")
         target_compile_definitions(plume PUBLIC PLUME_DEKO3D=1)
+        # Port 157: wrap libnx gpfifo kickoff ioctl to split and retry refused GPU submissions
+        target_link_options(plume INTERFACE "LINKER:--wrap=nvioctlChannel_KickoffPb")
         # uam's Mesa (19) and the static NVK's (a newer Mesa) define functions of the same names with other signatures
         # (ralloc, the linear allocator, hash tables): the linker gave uam's preprocessor NVK's linear_alloc_child, which
         # returned null (banjo-nx's first emulator runs, 2026-10-17). uam is linked into one object whose strong symbols

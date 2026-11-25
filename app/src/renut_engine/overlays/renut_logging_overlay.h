@@ -68,6 +68,8 @@ public:
         rex::RemoveSink(renut::log::Input, sink_);
     }
 
+    bool WantsFrame() const override { return visible_; }
+
     void OnDraw(ImGuiIO& io) override {
         if (!visible_) return;
         if (!AppImGuiReady()) return;  // renut-ultimate (port 66)

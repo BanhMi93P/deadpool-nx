@@ -17,9 +17,11 @@
 
 #include "imgui.h"
 #include "renut_engine/overlays/app_imgui.h"  // renut-ultimate (port 66)
+#include "renut_engine/perf/frame_stats.h"
 #include "profiler/profiler.h"
 
 REXCVAR_DECLARE(bool, banjo_show_profiler);
+extern "C" bool RexSwitchPerfStacksActive(void);
 
 class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
  public:
@@ -30,12 +32,17 @@ class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
   }
   ~ProfilerOverlayDialog() override { rex::ui::UnregisterBind("bind_profiler"); }
 
+  bool WantsFrame() const override { return REXCVAR_GET(banjo_show_profiler); }
+
   void OnDraw(ImGuiIO& io) override {
+    if (!REXCVAR_GET(banjo_show_profiler)) return;
+    if (!AppImGuiReady()) return;  // renut-ultimate (port 66)
+
     using banjo::profiler::Series;
     constexpr size_t kSeries = static_cast<size_t>(Series::kCount);
     constexpr size_t kHistory = 256;
 
-    // Sample every series once per UI frame, as Unleashed's window did.
+    // Sample every series once per UI frame when visible.
     for (size_t s = 0; s < kSeries; ++s) {
       const auto series = static_cast<Series>(s);
       history_[s][index_] = banjo::profiler::HasValue(series)
@@ -44,13 +51,14 @@ class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
     }
     index_ = (index_ + 1) % kHistory;
 
-    if (!REXCVAR_GET(banjo_show_profiler)) return;
-    if (!AppImGuiReady()) return;  // renut-ultimate (port 66)
+    const ImGuiWindowFlags hud_flags = ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoFocusOnAppearing;
 
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 580.0f, 20.0f), ImGuiCond_FirstUseEver);
+    // Window 1: top-right Frame Time graph + series breakdown.
+    ImGui::SetNextWindowSize(ImVec2(540.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(std::max(20.0f, io.DisplaySize.x - 560.0f), 20.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.78f);
     bool open = true;
-    if (ImGui::Begin("Profiler", &open)) {
+    if (ImGui::Begin("Profiler", &open, hud_flags)) {
       DrawGraph();
 
       ImGui::Separator();
@@ -76,7 +84,6 @@ class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
       const std::string device = banjo::profiler::RendererDevice();
       if (!device.empty()) ImGui::Text("Device: %s", device.c_str());
 
-      // CPU use is measured since the previous query, so ask once a second (Unleashed: once per report).
       if (io.DeltaTime > 0.0f) threads_age_ += io.DeltaTime;
       if (threads_age_ >= 1.0f) {
         threads_age_ = 0.0f;
@@ -89,7 +96,73 @@ class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
       }
     }
     ImGui::End();
-    if (!open) rex::cvar::SetFlagByName("banjo_show_profiler", "false");
+
+    // Window 2: bottom-left Frame Pacing / Vblanks / Process CPU% / Wait Breakdown.
+    const auto pacing = renut::frame_stats::GetPacingSnapshot();
+    const auto proc_cpu = banjo::profiler::QueryProcessCpuUsage();
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(20.0f, std::max(20.0f, io.DisplaySize.y - 340.0f)), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.78f);
+    bool open_pacing = true;
+    if (ImGui::Begin("Profiler (Deadpool)", &open_pacing, hud_flags)) {
+      ImGui::Text("Frame pacing (last %d game frames)", pacing.count);
+      if (pacing.count > 0) {
+        ImGui::Text("best %.2f ms  |  median %.2f ms  |  worst %.2f ms",
+                    pacing.best_ms, pacing.median_ms, pacing.worst_ms);
+        ImGui::Text("average %.1f FPS  |  1%% low %.1f FPS  |  stutters (>2x med): %d",
+                    pacing.avg_fps, pacing.one_percent_low_fps, pacing.stutters);
+        ImGui::Text("vblanks per frame (16.7 ms): 1:%u  2:%u  3:%u  4:%u  5+:%u",
+                    pacing.vblanks[0], pacing.vblanks[1], pacing.vblanks[2],
+                    pacing.vblanks[3], pacing.vblanks[4]);
+      } else {
+        ImGui::TextDisabled("waiting for game frames...");
+      }
+
+      ImGui::Separator();
+      if (proc_cpu.valid) {
+        ImGui::Text("Process CPU (all threads): %.1f%% of one core, %.1f%% of the four",
+                    proc_cpu.pct_one_core, proc_cpu.pct_four_cores);
+      } else {
+        ImGui::TextDisabled("Process CPU (all threads): n/a");
+      }
+
+      if (pacing.count > 0) {
+        ImGui::Text("Game thread CPU (active):    %6.2f ms  (avg %6.2f ms)",
+                    pacing.cur_cpu_active_ms, pacing.avg_cpu_active_ms);
+        ImGui::Text("Game waiting for fences:     %6.2f ms  (avg %6.2f ms)",
+                    pacing.cur_wait_fence_ms, pacing.avg_wait_fence_ms);
+        ImGui::Text("Game waiting for Swap:       %6.2f ms  (avg %6.2f ms)",
+                    pacing.cur_wait_swap_ahead_ms, pacing.avg_wait_swap_ahead_ms);
+        ImGui::Text("Game waiting for display:    %6.2f ms  (avg %6.2f ms)",
+                    pacing.cur_wait_display_ms, pacing.avg_wait_display_ms);
+        ImGui::Text("Game waiting for limiter:    %6.2f ms  (avg %6.2f ms)",
+                    pacing.cur_wait_limiter_ms, pacing.avg_wait_limiter_ms);
+        if (pacing.render_thread_known) {
+          ImGui::Text("Render thread:               %6.2f ms  (avg %6.2f ms)",
+                      pacing.cur_render_thread_ms, pacing.avg_render_thread_ms);
+        } else {
+          ImGui::TextDisabled("Render thread:               n/a");
+        }
+        if (pacing.gpu_known) {
+          ImGui::Text("GPU Frame:                   %6.2f ms  (avg %6.2f ms)",
+                      pacing.cur_gpu_ms, pacing.avg_gpu_ms);
+        } else {
+          ImGui::TextDisabled("GPU Frame:                   n/a");
+        }
+      }
+
+      ImGui::Separator();
+      ImGui::Text("Hitches (> 45 ms): %d in ring  (%llu total)",
+                  pacing.hitches, static_cast<unsigned long long>(pacing.total_hitches));
+      const bool stacks_on = RexSwitchPerfStacksActive();
+      ImGui::Text("Stack profiler (perfil_pilas.flag):");
+      ImGui::SameLine();
+      ImGui::TextColored(stacks_on ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                         "%s", stacks_on ? "ON" : "off");
+    }
+    ImGui::End();
+
+    if (!open || !open_pacing) rex::cvar::SetFlagByName("banjo_show_profiler", "false");
   }
 
  private:
@@ -138,7 +211,11 @@ class ProfilerOverlayDialog : public rex::ui::ImGuiDialog {
       const float y = p1.y - (ms / top) * size.y;
       dl->AddLine(ImVec2(p0.x, y), ImVec2(p1.x, y), IM_COL32(80, 80, 90, 160));
       char label[16];
-      std::snprintf(label, sizeof(label), "%.0f", ms);
+      if (ms < 40.0f) {
+        std::snprintf(label, sizeof(label), "%.1f", ms);
+      } else {
+        std::snprintf(label, sizeof(label), "%.0f", ms);
+      }
       dl->AddText(ImVec2(p0.x + 2.0f, y - ImGui::GetTextLineHeight()), IM_COL32(150, 150, 160, 255), label);
     }
 

@@ -10,6 +10,18 @@ banjo_renut_resolve_skip = true
 banjo_renut_alpha_to_mask_test = false
 banjo_renut_render_height_handheld = 720
 banjo_renut_render_height_docked = 1080
+banjo_renut_dynamic_resolution = true
+banjo_renut_dynamic_handheld_low = 486
+banjo_renut_dynamic_handheld_high = 720
+banjo_renut_dynamic_docked_low = 720
+banjo_renut_dynamic_docked_high = 1080
+banjo_renut_dynamic_steps = 4
+sasrt_dynamic_lines_handheld = 18
+sasrt_dynamic_lines_docked = 36
+banjo_renut_dynamic_gpu_ms = 21.0
+banjo_renut_dynamic_down_frames = 2
+sasrt_dynamic_cpu_aware = true
+banjo_renut_dynamic_up_s = 2.0
 
 # DLC & Controls
 dlc_enabled = true
@@ -30,3 +42,23 @@ banjo_renut_stream_redeem = false
 banjo_async_present = false
 spin_hint_yield = false
 blur_small_alloc_mb = 0
+
+# System core (Core 3 capped <= 20% via deadpool_system_core_max_pct) & audio deadlock safety fixes
+banjo_system_core = 1
+banjo_system_core_xma = true
+banjo_system_core_compiles = false
+banjo_system_core_uam = false
+deadpool_system_core_max_pct = 20
+banjo_deko3d_compile_wait_boost = false
+audio_xma_kick_without_lock = false
+
+# Release-clean monitor & diagnostic defaults (keep off when playing normally)
+log_level = "warn"
+renut_gpu_profile = 0.0
+banjo_renut_diag_gpu_shaders = false
+sasrt_gpu_diag_profile_vs = false
+sasrt_deko3d_diag_barriers = false
+banjo_deko3d_log_misses = false
+banjo_show_profiler = false
+banjo_cpu_profiler = false
+switch_profile_stacks = false

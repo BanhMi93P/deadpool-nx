@@ -133,6 +133,10 @@ REXCVAR_DEFINE_STRING(
     language, "english", "Kernel",
     "Game language: auto (Switch system language), english, german, french, spanish, or italian");
 
+extern "C" const char* RexAppBuildStamp(void) {
+  return "deadpool-nx (" __DATE__ " " __TIME__ ")";
+}
+
 namespace deadpool {
 
 namespace {

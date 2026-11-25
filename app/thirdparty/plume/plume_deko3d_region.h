@@ -147,11 +147,40 @@ struct GpuRegionRanges {
         return give;
     }
 
+    // Port 270 (sasrt-nx 1.0.1): giveBackBottom with no malloc/free for plume_region_give_back_for_sbrk inside _sbrk_r.
+    template <typename Raise>
+    uint64_t giveBackBottomInPlace(uint64_t step, Raise &&raise) {
+        auto it = free.find(low);
+        if (it == free.end())
+            return 0;
+        uint64_t give = it->second / step * step;
+        if (give == it->second)
+            give -= step;
+        if (!give)
+            return 0;
+        const uintptr_t newLow = low + give;
+        if (!raise(newLow))
+            return 0;
+        auto node = free.extract(it);
+        node.key() = newLow;
+        node.mapped() -= give;
+        free.insert(std::move(node));
+        low = newLow;
+        givenBack += give;
+        ++givebacks;
+        return give;
+    }
+
     uint64_t freeBytes() const {
         uint64_t bytes = 0;
         for (const auto &r : free)
             bytes += r.second;
         return bytes;
+    }
+
+    uint64_t freeBottom() const {
+        auto it = free.find(low);
+        return it == free.end() ? 0 : it->second;
     }
 
     uint64_t largestFree() const {

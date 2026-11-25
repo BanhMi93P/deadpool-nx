@@ -153,6 +153,10 @@ inline void ApplyEntry(ImGuiIO& io, const UiEntry& e, StateUiEntry& state) {
   if ((read & kModifier) == kModifier) {
     state.of_shortcut |= read & kOfShortcut;
   }
+  constexpr uint64_t kGameMenuChord = kButtonPlus | kButtonMinus;
+  if ((read & kGameMenuChord) == kGameMenuChord) {
+    state.of_shortcut |= kGameMenuChord;
+  }
   state.of_shortcut &= read;
   const uint64_t b = read & ~state.of_shortcut;
 

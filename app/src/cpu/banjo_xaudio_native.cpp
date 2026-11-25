@@ -345,16 +345,11 @@ inline int RexSwitchSystemCoreMixerPriority() { return -1; }
 #endif
 
 REX_HOOK_RAW(rex_XAUDIO__CEngine__SupervisorProcessingThreadEntryPoint) {
-  if (RexSwitchMoveCurrentThreadToSystemCore(RexSwitchSystemCoreMixerPriority()))
-    REXLOG_INFO("[banjo] XAudio supervisor thread on the system core at priority 0x{:X} (banjo_system_core)",
-                RexSwitchSystemCoreMixerPriority());
+  // Keep heavy XAudio mixing on Cores 0-2 so Core 3 stays strictly <= 20% (reserved for XMA + Audio Worker).
   __imp__rex_XAUDIO__CEngine__SupervisorProcessingThreadEntryPoint(ctx, base);
 }
 
 REX_HOOK_RAW(rex_XAUDIO__CEngine__PeonProcessingThreadEntryPoint) {
-  if (RexSwitchMoveCurrentThreadToSystemCore(RexSwitchSystemCoreMixerPriority()))
-    REXLOG_INFO("[banjo] XAudio peon thread on the system core at priority 0x{:X} (banjo_system_core)",
-                RexSwitchSystemCoreMixerPriority());
   __imp__rex_XAUDIO__CEngine__PeonProcessingThreadEntryPoint(ctx, base);
 }
 

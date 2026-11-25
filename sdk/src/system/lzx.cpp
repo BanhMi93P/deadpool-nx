@@ -186,3 +186,92 @@ int lzxdelta_apply_patch(rex::xex2_delta_patch* patch, size_t patch_len, uint32_
 
   return 0;
 }
+
+struct LzxXmemStream {
+  mspack_system sys{};
+  mspack_memory_file src_file{};
+  mspack_memory_file dst_file{};
+  uint32_t window_size = 0;
+  int window_bits = 0;
+  lzxd_stream* lzxd = nullptr;
+};
+
+LzxXmemStream* lzx_xmem_create(uint32_t window_size) {
+  uint32_t bits = 0;
+  if (window_size == 0u || (window_size & (window_size - 1u)) != 0u ||
+      !rex::bit_scan_forward(window_size, &bits) || bits < 15u || bits > 21u) {
+    return nullptr;
+  }
+  auto* stream = new LzxXmemStream();
+  stream->sys.read = mspack_memory_read;
+  stream->sys.write = mspack_memory_write;
+  stream->sys.alloc = mspack_memory_alloc;
+  stream->sys.free = mspack_memory_free;
+  stream->sys.copy = mspack_memory_copy;
+  stream->window_size = window_size;
+  stream->window_bits = static_cast<int>(bits);
+  stream->lzxd = lzxd_init(&stream->sys, reinterpret_cast<mspack_file*>(&stream->src_file),
+                           reinterpret_cast<mspack_file*>(&stream->dst_file), stream->window_bits,
+                           0, 0x8000, 0, 0);
+  if (!stream->lzxd) {
+    delete stream;
+    return nullptr;
+  }
+  return stream;
+}
+
+void lzx_xmem_destroy(LzxXmemStream* stream) {
+  if (!stream) {
+    return;
+  }
+  if (stream->lzxd) {
+    lzxd_free(stream->lzxd);
+    stream->lzxd = nullptr;
+  }
+  delete stream;
+}
+
+int lzx_xmem_decompress_chunk(LzxXmemStream* stream, const uint8_t* src, size_t src_len,
+                              uint8_t* dst, size_t uncomp_len, bool reset) {
+  if (!stream || !src || !dst || src_len == 0 || uncomp_len == 0 || uncomp_len > 0x8000u ||
+      src_len >= INT_MAX) {
+    return 1;
+  }
+  if (reset || !stream->lzxd) {
+    if (stream->lzxd) {
+      lzxd_free(stream->lzxd);
+      stream->lzxd = nullptr;
+    }
+    stream->lzxd = lzxd_init(&stream->sys, reinterpret_cast<mspack_file*>(&stream->src_file),
+                             reinterpret_cast<mspack_file*>(&stream->dst_file), stream->window_bits,
+                             0, 0x8000, 0, 0);
+    if (!stream->lzxd) {
+      return 1;
+    }
+  }
+
+  stream->src_file.buffer = const_cast<uint8_t*>(src);
+  stream->src_file.buffer_size = static_cast<off_t>(src_len);
+  stream->src_file.offset = 0;
+
+  stream->dst_file.buffer = dst;
+  stream->dst_file.buffer_size = static_cast<off_t>(uncomp_len);
+  stream->dst_file.offset = 0;
+
+  // Match Xbox 360 sub_82D8D3A8: reset the bitreader at the start of each chunk
+  // while preserving the sliding LZX window and Huffman tables across chunks.
+  lzxd_stream* lzxd = stream->lzxd;
+  lzxd->i_ptr = lzxd->i_end = lzxd->inbuf;
+  lzxd->bits_left = 0;
+  lzxd->bit_buffer = 0;
+  lzxd->input_end = 0;
+  lzxd->length = lzxd->offset + static_cast<off_t>(uncomp_len);
+
+  const unsigned int saved_frame = lzxd->frame;
+  const int err = lzxd_decompress(lzxd, static_cast<off_t>(uncomp_len));
+  lzxd->frame = saved_frame + 1;
+  if (err != 0 || stream->dst_file.offset != static_cast<off_t>(uncomp_len)) {
+    return err != 0 ? err : 1;
+  }
+  return 0;
+}

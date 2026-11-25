@@ -40,7 +40,7 @@
 #include <string>
 
 // banjo-nx (2026-10-27, the user's request; NetherSX2_nx's 4-core mode, MIT, NaGaa95). See threading_switch.h.
-REXCVAR_DEFINE_INT32(banjo_system_core, 1, "Banjo/Threads",
+REXCVAR_DEFINE_INT32(banjo_system_core, 0, "Banjo/Threads",
                      "When the process is granted all four cores (a forwarder whose NPDM allows CPU 0-3, as "
                      "NetherSX2_nx's): 0 = leave core 3 to the system, 1 = audio, the XMA decoder, the XAudio mixer "
                      "thread and shader compiles each pinned to core 3, every other thread on cores 0-2 "
@@ -91,6 +91,10 @@ REXCVAR_DEFINE_BOOL(banjo_system_core_test, false, "Banjo/Debug",
                     "Test of banjo_system_core's layout without a four-core launch: the process's highest core (2 with "
                     "the usual three) is treated as the system core, so the moves, the hooks and the mask wrap run in "
                     "an emulator. Slower on a console (the game keeps two cores)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(deadpool_system_core_max_pct, 20, "Banjo/Threads",
+                     "Maximum CPU duty-cycle percentage allowed for our background threads pinned to Core 3 (1..50; default 20%)")
+    .range(1, 50)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -528,8 +532,8 @@ void ReadSystemCore(bool with_cvar) {
   // banjo_system_core_test, the highest of any two or more.
   const bool test = with_cvar && REXCVAR_GET(banjo_system_core_test) && __builtin_popcountll(mask) >= 2;
   const int top = (__builtin_popcountll(mask) >= 4 || test) ? 63 - __builtin_clzll(mask) : -1;
-  // Before the cvars are parsed (a thread made before main): the default layout.
-  const int mode = top < 0 ? 0 : (with_cvar ? int(REXCVAR_GET(banjo_system_core)) : 1);
+  // Before the cvars are parsed (a thread made before main): keep Core 3 reserved for Horizon OS.
+  const int mode = top < 0 ? 0 : (with_cvar ? int(REXCVAR_GET(banjo_system_core)) : 0);
   g_process_mask.store(unsigned(mask), std::memory_order_relaxed);
   g_system_mode.store(mode, std::memory_order_relaxed);
   g_system_core.store(mode >= 1 ? top : -1, std::memory_order_relaxed);
@@ -611,6 +615,23 @@ bool RexSwitchMoveCurrentThreadToSystemCore(int priority) {
   if (R_FAILED(svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core))) return false;
   if (priority >= 0) (void)RexSwitchSetCurrentThreadPriorityOk(priority);
   return true;
+}
+
+void RexSwitchThrottleSystemCoreSlice(uint64_t active_ticks) {
+  const int sys_core = RexSwitchSystemCore();
+  if (sys_core < 0 || int(svcGetCurrentProcessorNumber()) != sys_core) return;
+  int max_pct = int(REXCVAR_GET(deadpool_system_core_max_pct));
+  if (max_pct < 1) max_pct = 1;
+  if (max_pct > 50) max_pct = 50;
+  thread_local u64 tl_active_ticks = 0;
+  tl_active_ticks += active_ticks;
+  const u64 kQuantumTicks = armNsToTicks(250000ull);
+  if (tl_active_ticks >= kQuantumTicks) {
+    const u64 sleep_ticks = (tl_active_ticks * u64(100 - max_pct)) / u64(max_pct);
+    const u64 sleep_ns = armTicksToNs(sleep_ticks);
+    tl_active_ticks = 0;
+    if (sleep_ns > 0) svcSleepThread(s64(sleep_ns));
+  }
 }
 
 void RexSwitchSampleCoreIdle(void) {

@@ -74,6 +74,7 @@ extern "C" bool RexSwitchCoreIdleSample(int core,
 
 extern "C" {
 void _start(void);
+const char *RexAppBuildStamp(void) __attribute__((weak));
 /* rexglue log folder, ending in '/' (switch_crash_hooks.c). */
 const char *RexSwitchLogDir(void);
 void RexSwitchSanitizeThreadTls(void);
@@ -129,10 +130,17 @@ constexpr u64 kSecondNs = 1000000000ULL;      // tick for the console overlays
 std::atomic<uint32_t> g_resolution{(1280u << 16) | 720u};
 constexpr u64 kPassiveIntervalNs =
     100000000ULL; // 100 ms, without pausing threads
-// Next to the rexglue logs, in <NRO folder>/logs/rex/.
-std::string StackFlagPath() {
-  return std::string(RexSwitchLogDir()) + "stacks_profile.flag";
+// Next to the rexglue logs, in <NRO folder>/logs/rex/, or beside the NRO.
+std::string NroDirPath() {
+  std::string dir = RexSwitchLogDir();
+  constexpr std::string_view kSuffix = "logs/rex/";
+  if (dir.size() >= kSuffix.size() &&
+      dir.compare(dir.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0) {
+    dir.erase(dir.size() - kSuffix.size());
+  }
+  return dir;
 }
+std::atomic<bool> g_stacks_active{false};
 constexpr u64 kReportSeconds = 10;
 /*
  * Let the game start first. This only delays stack sampling and the first
@@ -1318,18 +1326,40 @@ void ProfilerMain(void *) {
   // Invasive sampling is only enabled explicitly, for diagnostics.
   // The normal mode keeps FPS, CPU and counters, without stopping the game.
   bool sample_stacks = false;
-  if (FILE *flag = std::fopen(StackFlagPath().c_str(), "r")) {
-    sample_stacks = true;
-    std::fclose(flag);
+  std::string stack_trigger = "off";
+  {
+    const std::string log_dir = RexSwitchLogDir();
+    const std::string nro_dir = NroDirPath();
+    struct Candidate {
+      std::string path;
+      const char *label;
+    };
+    const Candidate candidates[] = {
+        {nro_dir + "perfil_pilas.flag", "perfil_pilas.flag (NRO dir)"},
+        {log_dir + "perfil_pilas.flag", "perfil_pilas.flag (logs/rex)"},
+        {nro_dir + "stacks_profile.flag", "stacks_profile.flag (NRO dir)"},
+        {log_dir + "stacks_profile.flag", "stacks_profile.flag (logs/rex)"},
+    };
+    for (const auto &c : candidates) {
+      if (FILE *flag = std::fopen(c.path.c_str(), "r")) {
+        sample_stacks = true;
+        stack_trigger = c.label;
+        std::fclose(flag);
+        break;
+      }
+    }
   }
   // banjo-nx (as futari-nx): also from the config, so a profiling config works
   // without copying the flag file to the SD card (the title defines the cvar
   // switch_profile_stacks).
-  {
+  if (!sample_stacks) {
     const std::string value = rex::cvar::GetFlagByName("switch_profile_stacks");
-    if (value == "true" || value == "1")
+    if (value == "true" || value == "1") {
       sample_stacks = true;
+      stack_trigger = "cvar switch_profile_stacks";
+    }
   }
+  g_stacks_active.store(sample_stacks, std::memory_order_relaxed);
   // blur-nx (2026-11-16, the 15 ms batch): the interval between two stack
   // samples, from the title's cvar switch_profile_stacks_ms (1 when it has
   // none). Each sample pauses one game thread (svcSetThreadActivity), reads its
@@ -1350,11 +1380,19 @@ void ProfilerMain(void *) {
     counters_last[i] = CounterRead(i);
   }
   if (FILE *f = std::fopen(ReportPath().c_str(), "w")) {
+    const char *stamp = RexAppBuildStamp ? RexAppBuildStamp() : "unknown";
+    const u64 mod_size = g_text_hi > g_base ? (g_text_hi - g_base) : 0;
+    std::fprintf(f, "build: %s\n", stamp ? stamp : "unknown");
+    std::fprintf(f,
+                 "module base 0x%016" PRIx64 ", size 0x%" PRIx64
+                 " (code up to 0x%016" PRIx64 ")\n",
+                 g_base, mod_size, g_text_hi);
     std::fprintf(f, "image 0x%016" PRIx64 ", code up to 0x%016" PRIx64 "\n\n",
                  g_base, g_text_hi);
-    std::fprintf(f, "Stack sampling: %s (%u ms)\n",
+    std::fprintf(f, "Stack sampling: %s (%u ms, trigger: %s)\n",
                  sample_stacks ? "active" : "disabled",
-                 unsigned(sample_interval_ns / 1000000ULL));
+                 unsigned(sample_interval_ns / 1000000ULL),
+                 stack_trigger.c_str());
     const FpcrCost fpcr = MeasureFpcrCost(tick_freq);
     std::fprintf(f,
                  "FPCR on this CPU (per access, loop overhead taken off): read "
@@ -1904,6 +1942,10 @@ void RexSwitchPerfHitch(u64 start, u64 end) {
   if (i < kMaxHitches) {
     g_hitches[i] = {start, end};
   }
+}
+
+bool RexSwitchPerfStacksActive(void) {
+  return g_stacks_active.load(std::memory_order_relaxed);
 }
 
 void RexSwitchPerfExclusiveCore(int core) {

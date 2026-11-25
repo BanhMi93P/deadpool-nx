@@ -834,6 +834,11 @@ void SwitchInputDriver::Poll(size_t index) {
     gamepad.thumb_rx = static_cast<int16_t>(0);
     gamepad.thumb_ry = static_cast<int16_t>(0);
   }
+  constexpr uint64_t kGameMenuChord = HidNpadButton_Plus | HidNpadButton_Minus;
+  if ((held & kGameMenuChord) == kGameMenuChord) {
+    gamepad.buttons = static_cast<uint16_t>(
+        uint16_t(gamepad.buttons) & ~(X_INPUT_GAMEPAD_START | X_INPUT_GAMEPAD_BACK));
+  }
 
   if (std::memcmp(&gamepad, &slot.state.gamepad, sizeof(gamepad)) != 0) {
     slot.state.gamepad = gamepad;
@@ -935,6 +940,24 @@ void SwitchInputDriver::DispatchMenuShortcuts(Slot& slot, uint64_t held) {
     }
   }
   slot.menu_shortcuts = applet_now ? (slot.menu_shortcuts | kBitApplet) : (slot.menu_shortcuts & ~kBitApplet);
+
+  // Plus + Minus opens the quick in-game diagnostic menu (GameMenuDialog, F6).
+  const uint64_t kBitGameMenu = uint64_t(1) << 10;
+  const bool menu_now = (held & (HidNpadButton_Plus | HidNpadButton_Minus)) ==
+                        (HidNpadButton_Plus | HidNpadButton_Minus);
+  const bool menu_before = (slot.menu_shortcuts & kBitGameMenu) != 0;
+  if (menu_now && !menu_before) {
+    auto press = [] {
+      rex::ui::KeyEvent keystroke(nullptr, rex::ui::VirtualKey::kF6, 1, false, false, false, false, false);
+      rex::ui::ProcessKeyEvent(keystroke);
+    };
+    rex::ui::Window* const window = window_ui_.load(std::memory_order_acquire);
+    if (!window || !window->app_context().CallInUIThread(press)) {
+      press();
+    }
+    REXLOG_INFO("menu shortcut: game menu (+ & -)");
+  }
+  slot.menu_shortcuts = menu_now ? (slot.menu_shortcuts | kBitGameMenu) : (slot.menu_shortcuts & ~kBitGameMenu);
 }
 
 void SwitchInputDriver::ShowControllerApplet() {

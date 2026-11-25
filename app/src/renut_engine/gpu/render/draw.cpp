@@ -2403,7 +2403,8 @@ uint32_t ShaderProfileLabel(const Targets &t, const ShaderRecord *ps, const Pipe
   const uint32_t target = TargetsProfileLabel(t);
   // RB_BLENDCONTROL ONE / ZERO / ADD for colour and alpha (BlendDesc's no-blend case).
   const bool blended = key.color_count && (key.blend_control[0] & 0x1FFF1FFF) != 0x00010001;
-  const ShaderRecord *by_vs = !ps && vs && SasrtProfileVsOn() ? vs : nullptr;  // sasrt-nx (sasrt_gpu_diag_profile_vs)
+  const ShaderRecord *by_vs =
+      !ps && vs && (SasrtProfileVsOn() || gpu_profile::FrameDiagActive()) ? vs : nullptr;  // sasrt-nx (sasrt_gpu_diag_profile_vs)
   const u32 size_bits = by_vs && g_sasrt_label_export_count
                             ? (31u - u32(std::countl_zero(g_sasrt_label_export_count))) |
                                   (g_sasrt_label_export_prim & 15u) << 5 | std::min(g_sasrt_label_export_inst, 15u) << 9
@@ -2468,7 +2469,7 @@ bool BindTargets(const Targets &t, bool depth_writes = true) {
   }
   // banjo-nx: with banjo_renut_diag_gpu_shaders the draw marks its own label (ShaderProfileLabel), the pass's name
   // in it, which saves a timestamp a draw.
-  if (!banjo::renut_gpu::DiagGpuShadersOn() && gpu_profile::Timed())
+  if (!(banjo::renut_gpu::DiagGpuShadersOn() || gpu_profile::FrameDiagActive()) && gpu_profile::Timed())
     gpu_profile::Mark(State(), TargetsProfileLabel(t));
   for (uint32_t i = 0; i < t.color_count; ++i)
     TransitionSurfaceLocked(t.colors[i], plume::RenderTextureLayout::COLOR_WRITE);
@@ -2538,6 +2539,17 @@ bool BindTargets(const Targets &t, bool depth_writes = true) {
               t.color_count ? u32(t.colors[0]->samples) : 0, t.depth ? t.depth->guest_va : 0,
               t.depth ? t.depth->width : 0, t.depth ? t.depth->height : 0, t.depth ? u32(t.depth->samples) : 0);
     g_trace_draws = 0;
+  }
+  if (gpu_profile::FrameDiagActive() && g_bound.framebuffer != framebuffer) [[unlikely]] {
+    gpu_profile::FrameDiagNoteEvent(fmt::format(
+        "PASS colors={} c0={:08X} ({}x{} fmt {} s {}) c1={:08X} depth={:08X} ({}x{} fmt {} s {})",
+        t.color_count,
+        t.color_count ? t.colors[0]->guest_va : 0, t.color_count ? t.colors[0]->width : 0,
+        t.color_count ? t.colors[0]->height : 0, t.color_count ? int(t.colors[0]->format) : -1,
+        t.color_count ? u32(t.colors[0]->samples) : 0,
+        t.color_count > 1 ? t.colors[1]->guest_va : 0,
+        t.depth ? t.depth->guest_va : 0, t.depth ? t.depth->width : 0, t.depth ? t.depth->height : 0,
+        t.depth ? int(t.depth->format) : -1, t.depth ? u32(t.depth->samples) : 0));
   }
   if (g_bound.framebuffer != framebuffer) {
     State().command_list->setFramebuffer(framebuffer);
@@ -10804,7 +10816,8 @@ int FastDrawLocked(const u8 *device_state, const DrawCall &call, const ReplayCon
   // control) and the depth control may have changed.
   const bool targets_changed = (fields & kFieldTargets) || f.surface_epoch != SurfaceEpochLocked() ||
                                (f.targets.depth_dropped && (fields & kFieldViewPackets));
-  if (cfg.draw_log || cfg.census || banjo::renut_gpu::ResolveTraceOn() || g_dump_fetch)
+  if (cfg.draw_log || cfg.census || banjo::renut_gpu::ResolveTraceOn() || g_dump_fetch ||
+      gpu_profile::FrameDiagActive())
     return FastMiss(kFastDiag);
   const bool verify = cfg.verify;
   auto &s = State();
@@ -13897,20 +13910,34 @@ bool DrawStateLocked(const u8 *device_state, const DrawCall &call, const ReplayC
 #endif
   if (TerrainDiagOn() && IsTerrainVs(vs->hash)) [[unlikely]]  // banjo-nx (2026-10-28, banjo_renut_diag_terrain)
     NoteTerrainDraw(*vs, call, geometry, vs_constants, draw_fetches.f, sc);
+  const bool diag_capture = gpu_profile::FrameDiagActive();
   if (gpu_profile::Timed()) {
     // banjo-nx (package 28b): the GPU profile's draws a frame, and with banjo_renut_diag_gpu_shaders its label.
     // banjo-nx (2026-10-19, render-thread proposal 7): only in the frames the profile times.
-    if (export_count && SasrtProfileVsOn()) {  // sasrt-nx (2026-11-08, sasrt_gpu_diag_profile_vs)
+    if (export_count && (SasrtProfileVsOn() || diag_capture)) {  // sasrt-nx (2026-11-08, sasrt_gpu_diag_profile_vs)
       g_sasrt_label_export_count = std::max(1u, geometry.indexed ? geometry.index_count : geometry.vertex_count);
       g_sasrt_label_export_prim = call.primitive;
       g_sasrt_label_export_inst = geometry.instance_count;
     }
-    const uint32_t label = banjo::renut_gpu::DiagGpuShadersOn() ? ShaderProfileLabel(targets, ps, key, vs)
-                                                                : TargetsProfileLabel(targets);
+    const bool per_shader = banjo::renut_gpu::DiagGpuShadersOn() || diag_capture;
+    const uint32_t label = per_shader ? ShaderProfileLabel(targets, ps, key, vs)
+                                      : TargetsProfileLabel(targets);
     g_sasrt_label_export_count = 0;
-    if (banjo::renut_gpu::DiagGpuShadersOn())
+    if (per_shader)
       gpu_profile::Mark(s, label);
     gpu_profile::CountDraw(s, label);
+  }
+  if (diag_capture) [[unlikely]] {
+    const HostSurface *c0 = targets.color_count ? targets.colors[0] : nullptr;
+    gpu_profile::FrameDiagNoteEvent(fmt::format(
+        "DRAW #{}: vs={:016X} ps={:016X} prim={} count={} -> {} {} inst={}{} target={}x{} fmt={} x{} "
+        "depth={} dc={:08X} blend={:08X} mask={:X} a2c={} vfetch={}B exports={}",
+        gpu_profile::FrameDiagNextDrawOrdinal(), vs ? vs->hash : 0, ps ? ps->hash : 0, call.primitive, call.count,
+        geometry.indexed ? "indices" : "vertices", geometry.indexed ? geometry.index_count : geometry.vertex_count,
+        geometry.instance_count, call.tessellation ? " tess" : "", c0 ? c0->width : 0, c0 ? c0->height : 0,
+        c0 ? int(c0->format) : -1, targets.color_count, targets.depth ? int(targets.depth->format) : -1,
+        key.depth_control, key.blend_control[0], key.color_mask, key.alpha_to_coverage, sc.vertex_fetch_bytes,
+        export_count));
   }
   // banjo-nx (2026-10-20, from sa2-nx, banjo_renut_lean_diagnostics): the draw log's check once, not a call per draw.
   static const bool draw_log = !REXCVAR_GET(banjo_renut_lean_diagnostics) ||
@@ -14836,6 +14863,15 @@ void ClearTargets(const Targets &t, u32 flags, const plume::RenderRect &rect, co
     RGPU_INFO("[trace] clear {:X} rect ({},{})-({},{}) of {}x{}", flags, rect.left, rect.top, rect.right, rect.bottom,
               t.width, t.height);
   }
+  if (gpu_profile::FrameDiagActive()) [[unlikely]] {
+    const float c0 = color ? color[0] : 0.0f;
+    const float c1 = color ? color[1] : 0.0f;
+    const float c2 = color ? color[2] : 0.0f;
+    const float c3 = color ? color[3] : 0.0f;
+    gpu_profile::FrameDiagNoteEvent(fmt::format(
+        "CLEAR flags={:X} rect=({},{})-({},{}) target={}x{} color=({:.2f},{:.2f},{:.2f},{:.2f}) depth={:.3f} stencil={}",
+        flags, rect.left, rect.top, rect.right, rect.bottom, t.width, t.height, c0, c1, c2, c3, depth, stencil));
+  }
   if (rect.right <= rect.left || rect.bottom <= rect.top)
     return;
   // banjo-nx (2026-10-21, internal resolution): colour and depth targets of different scales (the HUD's UI target with
@@ -15727,13 +15763,25 @@ void SyncColorViewLocked(HostSurface *surface) {
   if ((latest->format_word & 0x3F) != kFormat2_10_10_10_Float_Edram || (surface->format_word & 0x3F) != kFormat2_10_10_10_As_16 ||
       latest->samples != plume::RenderSampleCount::COUNT_1 || surface->samples != plume::RenderSampleCount::COUNT_1 ||
       !s.view_fp10_encode_ps) {
-    if (InheritEdramSurfaceLocked(surface))
+    const bool inherited = InheritEdramSurfaceLocked(surface);
+    if (gpu_profile::FrameDiagActive()) [[unlikely]] {
+      gpu_profile::FrameDiagNoteEvent(fmt::format(
+          "SYNC_COLOR_VIEW dst={:08X} fmt={:02X} <- src={:08X} fmt={:02X} ({})",
+          surface->guest_va, surface->format_word & 0x3F, latest->guest_va, latest->format_word & 0x3F,
+          inherited ? "inherited" : "mismatch_skipped"));
+    }
+    if (inherited)
       return;
     static uint32_t logged = 0;
     if (LogLimited(logged, 8))
       RGPU_WARN("Resolve through a view of format {:02X} of EDRAM last drawn as {:02X}: its pixels are not carried over",
                 surface->format_word & 0x3F, latest->format_word & 0x3F);
     return;
+  }
+  if (gpu_profile::FrameDiagActive()) [[unlikely]] {
+    gpu_profile::FrameDiagNoteEvent(fmt::format(
+        "SYNC_COLOR_VIEW dst={:08X} fmt={:02X} <- src={:08X} fmt={:02X} (fp10_encode)",
+        surface->guest_va, surface->format_word & 0x3F, latest->guest_va, latest->format_word & 0x3F));
   }
   // renut-ultimate: a resolve handed over in this target's image is drawn out first; the encode writes the image.
   if (surface->handed)
@@ -16134,7 +16182,8 @@ void ResolveTargetsLocked(const u32 *targets, u32 flags, const ClearRect *source
   HostSurface *surface = GetHostSurfaceLocked(source_va);
   // sasrt-nx (2026-11-09, sasrt_gpu_diag_profile_vs; the fourth round): with the shaders' breakdown, each resolve's own
   // label: its source's size and format, colour or depth, and whether it clears after.
-  if (surface && banjo::renut_gpu::DiagGpuShadersOn() && SasrtProfileVsOn() && gpu_profile::Timed()) [[unlikely]] {
+  if (surface && ((banjo::renut_gpu::DiagGpuShadersOn() && SasrtProfileVsOn()) || gpu_profile::FrameDiagActive()) &&
+      gpu_profile::Timed()) [[unlikely]] {
     static std::unordered_map<uint64_t, uint32_t> labels;
     const uint64_t k = uint64_t(surface->width) | uint64_t(surface->height) << 14 | uint64_t(int(surface->format)) << 28 |
                        uint64_t(surface->depth) << 40 | uint64_t((flags >> 8) & 3) << 41;
@@ -16181,6 +16230,13 @@ void ResolveTargetsLocked(const u32 *targets, u32 flags, const ClearRect *source
               surface->depth ? "depth" : "colour", source_va, surface->width, surface->height, u32(surface->format),
               u32(surface->samples), dest_texture_va, dest_x, dest_y, dest_level, dest_slice, r.x1, r.y1, r.x2, r.y2,
               flags, (flags & 0x100) ? "clear colour after " : "", (flags & 0x200) ? "clear depth after" : "");
+  }
+  if (gpu_profile::FrameDiagActive() && surface) [[unlikely]] {
+    const ClearRect r = source_rect ? *source_rect : ClearRect{0, 0, -1, -1};
+    gpu_profile::FrameDiagNoteEvent(fmt::format(
+        "RESOLVE {} src={:08X} ({}x{} fmt {} s {}) -> tex={:08X} ({},{}) lv={} sl={} rect=({},{})-({},{}) flags={:X}",
+        surface->depth ? "depth" : "colour", source_va, surface->width, surface->height, u32(surface->format),
+        u32(surface->samples), dest_texture_va, dest_x, dest_y, dest_level, dest_slice, r.x1, r.y1, r.x2, r.y2, flags));
   }
   plume::RenderCommandList *cmd = s.command_list;
   static uint32_t depth_logged = 0;
@@ -16537,7 +16593,8 @@ void ResolveTargetsLocked(const u32 *targets, u32 flags, const ClearRect *source
 
   // Resolve-and-clear.
   if ((flags & 0x300) && surface) {
-    if (banjo::renut_gpu::DiagGpuShadersOn() && SasrtProfileVsOn() && gpu_profile::Timed()) [[unlikely]] {
+    if (((banjo::renut_gpu::DiagGpuShadersOn() && SasrtProfileVsOn()) || gpu_profile::FrameDiagActive()) &&
+        gpu_profile::Timed()) [[unlikely]] {
       static const uint32_t kClearLabel = gpu_profile::Label("resolves | the clear after");  // sasrt-nx (2026-11-09)
       gpu_profile::Mark(s, kClearLabel);
     }

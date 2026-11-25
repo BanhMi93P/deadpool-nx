@@ -4,6 +4,7 @@
 #include <rex/ui/keybinds.h>
 #include "imgui.h"
 #include "renut_engine/overlays/app_imgui.h"  // renut-ultimate (port 66)
+#include "renut_engine/perf/frame_stats.h"
 #include <chrono>
 #include <memory>
 #include <vector>
@@ -55,6 +56,10 @@ public:
 
     FPSManager* fpsManager = nullptr;
 
+    bool WantsFrame() const override {
+        return fpsManager && fpsManager->showFPS;
+    }
+
     void OnDraw(ImGuiIO& io) override {
 
         //Limit draw to every 10 frames
@@ -66,25 +71,40 @@ public:
 
         float hostFps = static_cast<float>(rex::cvar::Query<double>("present_host_fps"));
         float generatedFps = static_cast<float>(rex::cvar::Query<double>("present_fsr3_generated_fps"));
-        if (fpsManager->counters.empty() && hostFps <= 0.5f && generatedFps <= 0.5f) return;
+        const auto snap = renut::frame_stats::Get();
+        if (fpsManager->counters.empty() && snap.fps <= 0.0 && hostFps <= 0.5f && generatedFps <= 0.5f) return;
 
-        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration;
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoFocusOnAppearing;
 
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.55f);
         ImGui::Begin("##FPSOverlay", nullptr, flags);
 
-        for (auto& counter : fpsManager->counters) {
-            float fps = counter->averageFps;
-            ImVec4 color;
-            if (fps < 30.0f) color = ImVec4(1.0f, 0.15f, 0.15f, 1.0f);
-            else if (fps < 60.0f) color = ImVec4(1.0f, 0.9f, 0.0f, 1.0f);
-            else if (fps <= 70.0f) color = ImVec4(0.2f, 1.0f, 0.2f, 1.0f);
-            else color = ImVec4(0.2f, 0.6f, 1.0f, 1.0f);
+        auto color_for = [](float fps) {
+            if (fps < 30.0f) return ImVec4(1.0f, 0.15f, 0.15f, 1.0f);
+            if (fps < 60.0f) return ImVec4(1.0f, 0.9f, 0.0f, 1.0f);
+            if (fps <= 70.0f) return ImVec4(0.2f, 1.0f, 0.2f, 1.0f);
+            return ImVec4(0.2f, 0.6f, 1.0f, 1.0f);
+        };
 
-            ImGui::TextColored(color, "%.0f FPS", fps);
-            ImGui::TextColored(color,"cpu: %.1fms", cpuMS);
-            ImGui::TextColored(color,"gpu: %.1fms", gpuMS);
+        if (!fpsManager->counters.empty()) {
+            for (auto& counter : fpsManager->counters) {
+                float fps = counter->averageFps;
+                ImVec4 color = color_for(fps);
+                ImGui::TextColored(color, "%.0f FPS", fps);
+                ImGui::TextColored(color,"cpu: %.1fms", cpuMS);
+                ImGui::TextColored(color,"gpu: %.1fms", gpuMS);
+            }
+        } else if (snap.fps > 0.0) {
+            ImVec4 color = color_for(static_cast<float>(snap.fps));
+            ImGui::TextColored(color, "%.1f FPS (%.1f ms)", snap.fps, snap.frame_ms);
+            ImGui::TextColored(color, "cpu: %.1f ms", snap.cpu_ms);
+            if (snap.render_thread_known) {
+                ImGui::TextColored(color, "rt:  %.1f ms", snap.render_thread_ms);
+            }
+            if (snap.gpu_known) {
+                ImGui::TextColored(color, "gpu: %.1f ms", snap.gpu_ms);
+            }
         }
 
         if (hostFps > 0.5f) {

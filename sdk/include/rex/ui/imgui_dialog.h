@@ -38,6 +38,7 @@ class ImGuiDialog {
   void Then(rex::thread::Fence* fence);
 
   void Draw();
+  virtual bool WantsFrame() const { return true; }
 
  protected:
   ImGuiDialog(ImGuiDrawer* imgui_drawer);

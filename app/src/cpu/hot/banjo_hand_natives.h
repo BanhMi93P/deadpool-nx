@@ -58,6 +58,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include <rex/logging.h>
 #include <rex/ppc/context.h>
 
 #if defined(__aarch64__)
@@ -4230,54 +4231,202 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
 // f1-f13, v0.
 namespace n_82D242C8 {
 
+[[gnu::always_inline]] inline void
+LogDeclineOnce(const char *reason, int32_t out_ch, int32_t in_ch,
+               int16_t ramp_rem, uint32_t nsamples) {
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    REXLOG_WARN("[hot] n_82D242C8 declined ({}): out_ch={} in_ch={} ramp={} n={}",
+                reason, out_ch, in_ch, ramp_rem, nsamples);
+  }
+}
+
 template <class S>
 [[gnu::always_inline]] inline bool
 Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
   if (!On(kFmodMix)) [[unlikely]]
     return false;
-  const uint32_t conn = ctx.r3.u32, out = ctx.r4.u32, in = ctx.r5.u32;
+  const uint32_t conn = ctx.r3.u32;
+  uint32_t out = ctx.r4.u32, in = ctx.r5.u32;
   const int32_t out_ch = ctx.r6.s32, in_ch = ctx.r7.s32;
-  const uint32_t nsamples = ctx.r8.u32;
-  if (!detail::Straight(conn, 128u)) [[unlikely]]
+  uint32_t nsamples = ctx.r8.u32;
+  if (!detail::Straight(conn, 128u)) [[unlikely]] {
+    LogDeclineOnce("non-straight conn", out_ch, in_ch, 0, nsamples);
     return false;
+  }
   if (in == 0u || nsamples == 0u) {
     s.Hand(kFmodMix, 0u);
     ctx.r3.u64 = 0;
     s.Open();
     return true;
   }
-  if (int16_t(audio_dsp::Load16(base, conn + 120u)) != 0) [[unlikely]]
+  const int16_t ramp_rem = int16_t(audio_dsp::Load16(base, conn + 120u));
+  if (ramp_rem < 0) [[unlikely]] {
+    LogDeclineOnce("negative ramp", out_ch, in_ch, ramp_rem, nsamples);
     return false;
-  const float vol = audio_dsp::LoadFAt(base, conn + 124u);
-  constexpr float kEps = 1.99999995e-5f; // 0x37A7C5AC
-  if (std::fabs(vol) < kEps) {
-    s.Hand(kFmodMix, 0u);
-    ctx.r3.u64 = 0;
-    s.Open();
-    return true;
   }
   const bool supported =
-      (out_ch == 2 && (in_ch == 1 || in_ch == 2 || in_ch == 6)) ||
-      (out_ch == 6 && (in_ch == 1 || in_ch == 2 || in_ch == 6));
-  if (!supported) [[unlikely]]
+      (out_ch >= 1 && out_ch <= 8 && in_ch >= 1 && in_ch <= 8);
+  if (!supported) [[unlikely]] {
+    LogDeclineOnce("unsupported channels", out_ch, in_ch, ramp_rem, nsamples);
     return false;
+  }
   const int16_t num_out = int16_t(audio_dsp::Load16(base, conn + 36u));
   const int16_t num_in = int16_t(audio_dsp::Load16(base, conn + 38u));
-  if (num_out < 0 || num_out > 16 || num_in < 0 || num_in > 16) [[unlikely]]
+  if (num_out < 0 || num_out > 16 || num_in < 0 || num_in > 16) [[unlikely]] {
+    LogDeclineOnce("bad num_out/num_in", out_ch, in_ch, ramp_rem, nsamples);
     return false;
+  }
   const uint32_t u_out = uint32_t(out_ch), u_in = uint32_t(in_ch);
   if (nsamples > 0x0FFFFFFFu / (u_out > u_in ? u_out : u_in)) [[unlikely]]
     return false;
   const uint32_t out_bytes = nsamples * u_out * 4u;
   const uint32_t in_bytes = nsamples * u_in * 4u;
   if (!detail::Straight(out, out_bytes) || !detail::Straight(in, in_bytes))
-      [[unlikely]]
+      [[unlikely]] {
+    LogDeclineOnce("non-straight io", out_ch, in_ch, ramp_rem, nsamples);
     return false;
+  }
   if (audio_filter::Overlap(out, out_bytes, in, in_bytes) ||
-      audio_filter::Overlap(out, out_bytes, conn, 128u)) [[unlikely]]
+      audio_filter::Overlap(out, out_bytes, conn, 128u)) [[unlikely]] {
+    LogDeclineOnce("io/conn overlap", out_ch, in_ch, ramp_rem, nsamples);
     return false;
+  }
 
-  float g[6][6] = {};
+  const float vol = audio_dsp::LoadFAt(base, conn + 124u);
+  constexpr float kEps = 1.99999995e-5f; // 0x37A7C5AC
+
+  if (ramp_rem > 0) {
+    const uint32_t ramp_n =
+        uint32_t(ramp_rem) < nsamples ? uint32_t(ramp_rem) : nsamples;
+    const int32_t ramp_rows = num_out < out_ch ? num_out : out_ch;
+    const int32_t ramp_cols = num_in < in_ch ? num_in : in_ch;
+    uint32_t lvl_eas[8]{};
+    float cur_lvl[8][8]{};
+    float del[8][8]{};
+    if (ramp_rows > 0 && ramp_cols > 0) {
+      const uint32_t row_bytes = 4u * uint32_t(num_in);
+      for (int32_t o = 0; o < ramp_rows; ++o) {
+        const uint32_t lvl_ea =
+            audio_filter::Load32(base, conn + 64u + 4u * uint32_t(o));
+        const uint32_t del_ea =
+            audio_filter::Load32(base, conn + 88u + 4u * uint32_t(o));
+        if (lvl_ea == 0u || del_ea == 0u ||
+            !detail::Straight(lvl_ea, row_bytes) ||
+            !detail::Straight(del_ea, row_bytes) ||
+            audio_filter::Overlap(out, out_bytes, lvl_ea, row_bytes) ||
+            audio_filter::Overlap(out, out_bytes, del_ea, row_bytes)) [[unlikely]] {
+          LogDeclineOnce("ramp row bad/overlap", out_ch, in_ch, ramp_rem, nsamples);
+          return false;
+        }
+        lvl_eas[o] = lvl_ea;
+        const uint8_t *pl = ::banjo::hot::Raw(base, lvl_ea);
+        const uint8_t *pd = ::banjo::hot::Raw(base, del_ea);
+        for (int32_t i = 0; i < ramp_cols; ++i) {
+          cur_lvl[o][i] = audio_filter::LoadF(pl + 4u * uint32_t(i));
+          del[o][i] = audio_filter::LoadF(pd + 4u * uint32_t(i));
+        }
+      }
+    }
+    const int16_t new_ramp = int16_t(ramp_rem - int16_t(ramp_n));
+    uint32_t snap_usr_eas[16]{};
+    uint32_t snap_lvl_eas[16]{};
+    if (new_ramp == 0 && num_out > 0 && num_in > 0) {
+      const uint32_t row_bytes = 4u * uint32_t(num_in);
+      for (int32_t o = 0; o < num_out; ++o) {
+        const uint32_t u_ea =
+            audio_filter::Load32(base, conn + 40u + 4u * uint32_t(o));
+        const uint32_t l_ea =
+            audio_filter::Load32(base, conn + 64u + 4u * uint32_t(o));
+        if (u_ea == 0u || l_ea == 0u ||
+            !detail::Straight(u_ea, row_bytes) ||
+            !detail::Straight(l_ea, row_bytes) ||
+            audio_filter::Overlap(out, out_bytes, u_ea, row_bytes) ||
+            audio_filter::Overlap(out, out_bytes, l_ea, row_bytes)) [[unlikely]] {
+          LogDeclineOnce("ramp snap row bad/overlap", out_ch, in_ch, ramp_rem, nsamples);
+          return false;
+        }
+        snap_usr_eas[o] = u_ea;
+        snap_lvl_eas[o] = l_ea;
+      }
+    }
+
+    s.Hand(kFmodMix, out_bytes);
+    const uint32_t ramp_out_bytes = ramp_n * u_out * 4u;
+    if (!s.Note(out, ramp_out_bytes) || !s.Note(conn + 120u, 2u)) [[unlikely]] {
+      s.Open();
+      return true;
+    }
+    ::banjo::hot::Card(base, out, ramp_out_bytes);
+    ::banjo::hot::Card(base, conn + 120u, 2u);
+    ctx.fpscr.disableFlushMode();
+
+    uint8_t *po = ::banjo::hot::Raw(base, out);
+    const uint8_t *pi = ::banjo::hot::Raw(base, in);
+    for (uint32_t f = 0; f < ramp_n; ++f, po += 4u * u_out, pi += 4u * u_in) {
+      float x[8];
+      for (uint32_t i = 0; i < u_in; ++i)
+        x[i] = audio_filter::LoadF(pi + 4u * i);
+      for (int32_t o = 0; o < ramp_rows; ++o) {
+        float acc = 0.0f;
+        for (int32_t i = 0; i < ramp_cols; ++i) {
+          const float l = cur_lvl[o][i];
+          cur_lvl[o][i] = l + del[o][i];
+          acc = std::fmaf(x[i], l, acc);
+        }
+        audio_filter::StoreF(po + 4u * uint32_t(o),
+                             acc + audio_filter::LoadF(po + 4u * uint32_t(o)));
+      }
+    }
+
+    for (int32_t o = 0; o < ramp_rows; ++o) {
+      const uint32_t row_bytes = 4u * uint32_t(ramp_cols);
+      if (s.Note(lvl_eas[o], row_bytes)) {
+        ::banjo::hot::Card(base, lvl_eas[o], row_bytes);
+        uint8_t *pl = ::banjo::hot::Raw(base, lvl_eas[o]);
+        for (int32_t i = 0; i < ramp_cols; ++i)
+          audio_filter::StoreF(pl + 4u * uint32_t(i), cur_lvl[o][i]);
+      }
+    }
+    const uint16_t raw_ramp = __builtin_bswap16(uint16_t(new_ramp));
+    std::memcpy(::banjo::hot::Raw(base, conn + 120u), &raw_ramp, 2);
+
+    if (new_ramp == 0 && num_out > 0 && num_in > 0) {
+      const uint32_t row_bytes = 4u * uint32_t(num_in);
+      for (int32_t o = 0; o < num_out; ++o) {
+        if (s.Note(snap_lvl_eas[o], row_bytes)) {
+          ::banjo::hot::Card(base, snap_lvl_eas[o], row_bytes);
+          const uint8_t *pu = ::banjo::hot::Raw(base, snap_usr_eas[o]);
+          uint8_t *pl = ::banjo::hot::Raw(base, snap_lvl_eas[o]);
+          for (int32_t i = 0; i < num_in; ++i)
+            audio_filter::StoreF(pl + 4u * uint32_t(i),
+                                 audio_filter::LoadF(pu + 4u * uint32_t(i)) * vol);
+        }
+      }
+    }
+
+    out += ramp_n * u_out * 4u;
+    in += ramp_n * u_in * 4u;
+    nsamples -= ramp_n;
+    if (nsamples == 0u || std::fabs(vol) < kEps) {
+      ctx.r3.u64 = 0;
+      s.Open();
+      return true;
+    }
+  } else {
+    if (std::fabs(vol) < kEps) {
+      s.Hand(kFmodMix, 0u);
+      ctx.r3.u64 = 0;
+      s.Open();
+      return true;
+    }
+  }
+
+  const uint32_t rem_out_bytes = nsamples * u_out * 4u;
+  const uint32_t rem_in_bytes = nsamples * u_in * 4u;
+  (void)rem_in_bytes;
+
+  float g[8][8] = {};
   const int32_t r_max = num_out < out_ch ? num_out : out_ch;
   const int32_t c_max = num_in < in_ch ? num_in : in_ch;
   for (int32_t o = 0; o < r_max; ++o) {
@@ -4288,7 +4437,7 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
     if (num_in > 0) {
       const uint32_t row_bytes = 4u * uint32_t(num_in);
       if (!detail::Straight(row_ea, row_bytes) ||
-          audio_filter::Overlap(out, out_bytes, row_ea, row_bytes)) [[unlikely]]
+          audio_filter::Overlap(out, rem_out_bytes, row_ea, row_bytes)) [[unlikely]]
         return false;
       const uint8_t *pr = ::banjo::hot::Raw(base, row_ea);
       for (int32_t i = 0; i < c_max; ++i)
@@ -4305,7 +4454,7 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
     for (uint32_t o = 0; o < 6u; ++o) {
       const uint32_t row40 = audio_filter::Load32(base, conn + 40u + 4u * o);
       if (!detail::Straight(row40, 24u) ||
-          audio_filter::Overlap(out, out_bytes, row40, 24u)) [[unlikely]]
+          audio_filter::Overlap(out, rem_out_bytes, row40, 24u)) [[unlikely]]
         return false;
       const uint8_t *pr40 = ::banjo::hot::Raw(base, row40);
       for (uint32_t i = 0; i < 6u; ++i) {
@@ -4322,12 +4471,13 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
       diag6_mode = 2;
   }
 
-  s.Hand(kFmodMix, out_bytes);
-  if (!s.Note(out, out_bytes)) [[unlikely]] {
+  if (ramp_rem == 0)
+    s.Hand(kFmodMix, rem_out_bytes);
+  if (!s.Note(out, rem_out_bytes)) [[unlikely]] {
     s.Open();
     return true;
   }
-  ::banjo::hot::Card(base, out, out_bytes);
+  ::banjo::hot::Card(base, out, rem_out_bytes);
   ctx.fpscr.disableFlushMode();
 
   uint8_t *po = ::banjo::hot::Raw(base, out);
@@ -4536,7 +4686,39 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
       }
 #endif
     }
-  } else { // out_ch == 2 && in_ch == 6
+  } else if (out_ch == 6 && in_ch == 4) {
+#if defined(__aarch64__)
+    float32x4_t col_lo[4];
+    float32x2_t col_hi[4];
+    for (uint32_t i = 0; i < 4u; ++i) {
+      col_lo[i] = float32x4_t{g[0][i], g[1][i], g[2][i], g[3][i]};
+      col_hi[i] = float32x2_t{g[4][i], g[5][i]};
+    }
+    for (uint32_t f = 0; f < nsamples; ++f, po += 24u, pi += 16u) {
+      const float32x4_t in0 = audio_dsp::LoadF4BE(pi);
+      float32x4_t alo = vmulq_laneq_f32(col_lo[0], in0, 0);
+      float32x2_t ahi = vmul_laneq_f32(col_hi[0], in0, 0);
+      alo = vfmaq_laneq_f32(alo, col_lo[1], in0, 1);
+      ahi = vfma_laneq_f32(ahi, col_hi[1], in0, 1);
+      alo = vfmaq_laneq_f32(alo, col_lo[2], in0, 2);
+      ahi = vfma_laneq_f32(ahi, col_hi[2], in0, 2);
+      alo = vfmaq_laneq_f32(alo, col_lo[3], in0, 3);
+      ahi = vfma_laneq_f32(ahi, col_hi[3], in0, 3);
+      audio_dsp::StoreF4BE(po, vaddq_f32(alo, audio_dsp::LoadF4BE(po)));
+      audio_dsp::StoreF2BE(po + 16u, vadd_f32(ahi, audio_dsp::LoadF2BE(po + 16u)));
+    }
+#else
+    for (uint32_t f = 0; f < nsamples; ++f, po += 24u, pi += 16u) {
+      float x[4];
+      for (uint32_t i = 0; i < 4u; ++i) x[i] = audio_filter::LoadF(pi + 4u * i);
+      for (uint32_t o = 0; o < 6u; ++o) {
+        float acc = x[0] * g[o][0];
+        for (uint32_t i = 1; i < 4u; ++i) acc = std::fmaf(x[i], g[o][i], acc);
+        audio_filter::StoreF(po + 4u * o, acc + audio_filter::LoadF(po + 4u * o));
+      }
+    }
+#endif
+  } else if (out_ch == 2 && in_ch == 6) {
 #if defined(__aarch64__)
     float32x2_t col[6];
     for (uint32_t i = 0; i < 6u; ++i)
@@ -4566,6 +4748,19 @@ Native(PPCContext &__restrict ctx, uint8_t *base, [[maybe_unused]] S &s) {
       }
     }
 #endif
+  } else {
+    for (uint32_t f = 0; f < nsamples; ++f, po += 4u * u_out, pi += 4u * u_in) {
+      float x[8];
+      for (uint32_t i = 0; i < u_in; ++i)
+        x[i] = audio_filter::LoadF(pi + 4u * i);
+      for (uint32_t o = 0; o < u_out; ++o) {
+        float acc = x[0] * g[o][0];
+        for (uint32_t i = 1; i < u_in; ++i)
+          acc = std::fmaf(x[i], g[o][i], acc);
+        audio_filter::StoreF(po + 4u * o,
+                             acc + audio_filter::LoadF(po + 4u * o));
+      }
+    }
   }
 
   ctx.r3.u64 = 0;

@@ -301,6 +301,10 @@ REXCVAR_DEFINE_BOOL(banjo_native_fmod_reverb_verify, false,
                     "Snapshot-verify FMOD SFX Reverb native against localized "
                     "guest code on each clean call")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(deadpool_native_lzx, true, "Banjo/Enhancements",
+                    "Native libmspack acceleration for XMemDecompress LZX chunk decode (sub_82D8D0D8) "
+                    "with 4-chunk boot verification against guest output")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 // katamari-nx (2026-10-30): Beautiful Katamari's own hand-written natives
 // (cpu/hot/banjo_hand_natives.h, the end).

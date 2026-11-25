@@ -36,6 +36,43 @@ REXCVAR_DEFINE_INT32(blur_small_alloc_mb, 0, "Blur/Enhancements",
 
 #if defined(__SWITCH__)
 
+// Port 270 (sasrt-nx 1.0.1 / blur-nx): wrap _sbrk_r under malloc's recursive lock so sbrk(0) queries
+// from render/memory threads cannot race malloc_extend_top and corrupt newlib's break.
+#include <malloc.h>
+#include <sys/reent.h>
+
+#include <cerrno>
+
+extern "C" {
+extern char *fake_heap_start, *fake_heap_end;
+}
+
+namespace {
+char* g_break = nullptr;
+}  // namespace
+
+extern "C" __attribute__((weak)) uint64_t plume_region_give_back_for_sbrk(void);
+
+extern "C" __attribute__((used)) void* _sbrk_r(struct _reent* r, ptrdiff_t incr) {
+  __malloc_lock(r);
+  if (!g_break) g_break = fake_heap_start;
+  char* const prev = g_break;
+  char* end = fake_heap_end ? fake_heap_end : static_cast<char*>(__builtin_frame_address(0));
+  if (prev && incr > 0 && prev + incr > end && fake_heap_end && plume_region_give_back_for_sbrk &&
+      plume_region_give_back_for_sbrk() != 0)
+    end = fake_heap_end;
+  void* result;
+  if (!prev || prev + incr > end) {
+    r->_errno = ENOMEM;
+    result = reinterpret_cast<void*>(-1);
+  } else {
+    g_break = prev + incr;
+    result = prev;
+  }
+  __malloc_unlock(r);
+  return result;
+}
+
 namespace {
 
 constexpr uint32_t kClasses = 10;

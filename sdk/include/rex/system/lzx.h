@@ -24,3 +24,10 @@ int lzx_decompress(const void* lzx_data, size_t lzx_len, void* dest, size_t dest
 
 int lzxdelta_apply_patch(rex::xex2_delta_patch* patch, size_t patch_len, uint32_t window_size,
                          void* dest);
+
+struct LzxXmemStream;
+
+LzxXmemStream* lzx_xmem_create(uint32_t window_size);
+void lzx_xmem_destroy(LzxXmemStream* stream);
+int lzx_xmem_decompress_chunk(LzxXmemStream* stream, const uint8_t* src, size_t src_len,
+                              uint8_t* dst, size_t uncomp_len, bool reset);

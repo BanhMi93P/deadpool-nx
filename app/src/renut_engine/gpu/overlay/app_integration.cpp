@@ -28,8 +28,8 @@ namespace {
 // for Present to draw.
 void RecordSdkMenus(rex::ui::ImGuiDrawer *drawer) {
   uint32_t width = 0, height = 0;
-  if (!drawer || !drawer->HasDialogs() || !GetRenderWindowPixelSize(width, height) || !width ||
-      !height) {
+  if (!drawer || !drawer->HasDialogs() || !drawer->WantsFrame() ||
+      !GetRenderWindowPixelSize(width, height) || !width || !height) {
     OverlayDrawer::ClearLatest();
     return;
   }

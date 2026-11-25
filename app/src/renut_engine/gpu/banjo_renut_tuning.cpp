@@ -36,7 +36,6 @@
 #include <pthread.h>
 #include <rex/sys_counters.h>
 #include "profiler/switch_cpu_profiler.h"  // banjo-nx (2026-10-28): the A/B halves' CPU a frame
-extern "C" void RexSwitchPerfHitch(uint64_t start, uint64_t end);
 #endif
 
 #include <plume_render_interface.h>
@@ -78,7 +77,7 @@ REXCVAR_DEFINE_BOOL(banjo_system_core_compiles, false, "Banjo/Threads",
 // banjo-nx (2026-10-28, the user's request): the uam thread alone on the system core, with the background compiles held
 // to banjo_deko3d_background_compile_share (10 %) by their rests. The pipeline prebuild workers (bursts at area loads,
 // banjo_system_core_compiles) stay off it.
-REXCVAR_DEFINE_BOOL(banjo_system_core_uam, true, "Banjo/Threads",
+REXCVAR_DEFINE_BOOL(banjo_system_core_uam, false, "Banjo/Threads",
                     "When the process has the system core (four cores granted, banjo_system_core 1 or 2): the uam "
                     "shader compile thread runs there (at the lowest priority an application gets, so the audio "
                     "threads there go first; its background compiles rest to banjo_deko3d_background_compile_share of "
@@ -514,7 +513,7 @@ REXCVAR_DEFINE_BOOL(banjo_deko3d_async_cache_reads, true, "Banjo/Enhancements",
                     "each variant read from deko3d_shaders.bin on the card by the render thread): a variant the cache "
                     "file holds is read on the uam thread, ahead of the compiles, while the draw uses the shader's "
                     "generic variant (as banjo_deko3d_async_variants does for one that compiles). Same pixels");
-REXCVAR_DEFINE_BOOL(banjo_deko3d_compile_wait_boost, true, "Banjo/Enhancements",
+REXCVAR_DEFINE_BOOL(banjo_deko3d_compile_wait_boost, false, "Banjo/Enhancements",
                     "deko3d renderer (2026-10-23, the user's request): while a draw waits for a shader compile (the "
                     "game stopped: a blocking compile, not a background one), the console in boost mode "
                     "(appletSetCpuBoostMode FastLoad: CPU 1785 MHz, the GPU at 76.8 MHz, which has nothing new to do "
@@ -1423,6 +1422,29 @@ void StatsGameFrame() {
   const double since = std::chrono::duration<double>(now - g_stats.last_report).count();
   if (since < 10.0)
     return;
+  // Early-out when info logging is disabled (log_level = "warn"/"off"): skip
+  // building dozens of diagnostic strings on the game thread every 10 s,
+  // while still emitting important WARN reports.
+  auto *core_logger = ::rex::GetLoggerRaw(::rex::log::core());
+  if (!core_logger || !core_logger->should_log(spdlog::level::info)) {
+    if (const std::string dd = ::renut::gpu::DroppedDrawsReport(); !dd.empty())
+      REXLOG_WARN("[renut] {}", dd);
+    if (const uint64_t checked = g_fetch_misaligned[0].exchange(0, std::memory_order_relaxed)) {
+      const uint64_t off = g_fetch_misaligned[1].exchange(0, std::memory_order_relaxed);
+      if (off)
+        REXLOG_WARN("[renut] fetch data: {} of {} draws with an offset, slot or size off 16 bytes (the aw4 loads read "
+                    "the wrong words there)", off, checked);
+    }
+    if (const uint64_t n = g_exp_adjust[0].exchange(0, std::memory_order_relaxed)) {
+      const uint64_t neg = g_exp_adjust[1].exchange(0, std::memory_order_relaxed);
+      const uint64_t pos = g_exp_adjust[2].exchange(0, std::memory_order_relaxed);
+      REXLOG_WARN("[renut] exponent adjust: {} texture binds with a fetch exponent adjust ({} negative, {} positive), "
+                  "which Renut does not apply (the sampled values are 2^adjust too large or small)", n, neg, pos);
+    }
+    g_stats.total = {};
+    g_stats.last_report = now;
+    return;
+  }
   // blur-nx (2026-11-17, the Renut audit's #31, a census): this report is built on the game thread at its Swap (the
   // Game Master in Blur), under g_stats.mutex; how long it takes is logged at its end (the next report says the last).
   struct ReportClock {
@@ -1796,14 +1818,8 @@ WorkloadFrame g_workload_frame{};
 
 void NoteGameFrameTiming() {
   const auto now = std::chrono::steady_clock::now();
-#if REX_PLATFORM_SWITCH
-  uint64_t now_tick = 0;
-  asm volatile("mrs %0, cntpct_el0" : "=r"(now_tick));
-#endif
   PerfDiagState &p = PerfDiag();
   double ms = 0.0;
-  uint64_t prev_tick = 0;
-  bool record = false;
   {
     std::lock_guard lock(p.mutex);
     if (p.last_game_frame != std::chrono::steady_clock::time_point{}) {
@@ -1811,24 +1827,12 @@ void NoteGameFrameTiming() {
       if (ms > 0.0 && ms < 10000.0) {
         if (p.game_ms.size() < 4096)
           p.game_ms.push_back(ms);
-        record = ms > 35.0 && ms < 5000.0;
-        if (record)
+        if (ms > 35.0 && ms < 5000.0)
           ++p.hitches_over_35ms;
       }
     }
     p.last_game_frame = now;
-    prev_tick = p.last_game_tick;
-#if REX_PLATFORM_SWITCH
-    p.last_game_tick = now_tick;
-#endif
   }
-#if REX_PLATFORM_SWITCH
-  if (record && prev_tick && now_tick > prev_tick)
-    RexSwitchPerfHitch(prev_tick, now_tick);
-#else
-  (void)prev_tick;
-  (void)record;
-#endif
 }
 
 void StatsRenderThreadFrame(double busy_ms) {

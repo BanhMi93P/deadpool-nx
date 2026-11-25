@@ -185,6 +185,7 @@ set(RENUT_SOURCES
 	src/renut_engine/FPS.cpp
     # CPU/GPU profiler ported from UnleashedRecomp-NX (see src/profiler/profiler.h).
     src/profiler/profiler.cpp
+    src/renut_engine/overlays/game_menu.cpp
     # Native renderer (from masseffect-nx, itself derived from nfsmw-nx): reads the game's PM4 ring and draws with
     # Vulkan instead of the emulated Xenos GPU. On with masseffect_renderer_native = true. docs/native-renderer-plan.md.
     src/me/me_native_system.cpp

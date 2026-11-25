@@ -219,6 +219,8 @@ bool RexSwitchSystemCoreXma(void);
 int RexSwitchSystemCoreMixerPriority(void);
 /* One line: the cores, the system core, the mode and the NPDM's state (for the log). */
 void RexSwitchSystemCoreDescribe(char* out, size_t out_len);
+/* Reads the idle share cap and sleeps on Core 3 when a background thread exceeds deadpool_system_core_max_pct (%). */
+void RexSwitchThrottleSystemCoreSlice(uint64_t active_ticks);
 /* Records the idle ticks of the calling thread's core (InfoType_IdleTickCount, which only a thread on that core can
  * read; a thread on the system core calls it, and it reads at most every 100 ms). */
 void RexSwitchSampleCoreIdle(void);

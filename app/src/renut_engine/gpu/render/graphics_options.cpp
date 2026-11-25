@@ -117,7 +117,7 @@ bool IsShadowMap(const d3d::SurfaceDesc &desc, u32 width, u32 height) {
   if (width != height)
     return false;
   if ((u32(desc.Format) & 0x3F) == kFormatD24S8)
-    return width == 512 || width == 768 || width == 1024;
+    return width == 512 || width == 768 || width == 800 || width == 1024;
   // The local lights' depth, converted for their atlas.
   return !d3d::IsDepthFormat(desc.Format) && width == 512 &&
          GpuColorFormat((u32(desc.ColorInfo) >> 16) & 0xF) == GpuColorFormat::Fmt16_16_Float;

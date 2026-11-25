@@ -7,6 +7,7 @@
 #include "renut_engine/overlays/fps_overlay_dialog.h"
 #include "renut_engine/renut_logging.h"
 #include "renut_engine/overlays/renut_logging_overlay.h"
+#include "renut_engine/overlays/game_menu.h"
 #if !REX_PLATFORM_SWITCH
 #include "renut_engine/overlays/path_setup_wizard.h"
 #include "renut_engine/overlays/mnk_controls_dialog.h"
@@ -130,6 +131,9 @@ public:
         // CPU/GPU profiler window ported from UnleashedRecomp (F5 / banjo_show_profiler).
         profiler_dialog_ = std::make_unique<ProfilerOverlayDialog>(drawer);
         drawer->AddDialog(profiler_dialog_.get());
+        // Deadpool in-game quick menu (+ & - on Switch, F6 on PC).
+        game_menu_dialog_ = std::make_unique<renut::GameMenuDialog>(drawer, &fpsManager);
+        drawer->AddDialog(game_menu_dialog_.get());
 #if !REX_PLATFORM_SWITCH
         path_wizard_ = new PathSetupWizard(drawer);
         drawer->AddDialog(path_wizard_);
@@ -386,4 +390,5 @@ private:
 #endif
     std::unique_ptr<FpsOverlayDialog> fps_dialog_;
     std::unique_ptr<ProfilerOverlayDialog> profiler_dialog_;
+    std::unique_ptr<renut::GameMenuDialog> game_menu_dialog_;
 };

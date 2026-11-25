@@ -986,8 +986,10 @@ namespace plume {
         bool on = false;
         uint64_t size = 0, used = 0, peak = 0, freeBytes = 0, largestFree = 0, givenBack = 0, refused = 0;
         uint32_t freeRanges = 0, blocks = 0, growths = 0, givebacks = 0;
+        uint64_t freeBottom = 0, reserveRefused = 0;
     };
     void Deko3DGpuRegionFigures(Deko3DGpuRegionInfo &out);
+    void Deko3DSetRegionCpuReserve(uint64_t bytes);
     // sasrt-nx (2026-11-09; port 58, for a title's memory governor): the heap's free bytes as the memory-block log lines
     // count them (the free chunks inside what malloc has taken and what sbrk can still give; mallinfo walks every free
     // piece under malloc's lock: 7-21 ms in SASRT's docked race, a cold-path figure).

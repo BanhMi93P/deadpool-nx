@@ -68,6 +68,7 @@ the physical Switch button labels on your controller:
 | **R / L** | RB / LB | Sub-weapon / Momentum Modifier |
 | **+** | Start | Pause Menu |
 | **−** | Back | Upgrades Menu |
+| **+ & −** (together) | — | Quick Menu (FPS counter, Profiler, Frame Diagnostics) |
 | **Sticks / D-pad** | Sticks / D-pad | Move / Camera / Weapon Select |
 
 </div>
@@ -120,6 +121,8 @@ To temporarily disable DLC loading without deleting your files (saves are unaffe
 | `renut_dlc_folder` | `"dlc"` | Folder next to `deadpool.nro` scanned on startup for Xbox 360 DLC packages |
 | `banjo_renut_render_height_handheld` | `720` | Internal rendering height in handheld mode (`1280x720`) |
 | `banjo_renut_render_height_docked` | `1080` | Internal rendering height in docked mode (`1920x1080`; set to `720` for lower GPU load docked) |
+| `banjo_renut_dynamic_resolution` | `true` | Adaptive dynamic resolution scaling (`486p–720p` handheld, `720p–1080p` docked) to maintain 30 FPS under heavy load |
+| `deadpool_system_core_max_pct` | `20` | Maximum duty-cycle cap (%) for background XMA audio decoding on Switch Core 3 |
 | `input_xbox_layout` | `false` | `false`: physical Xbox button positions with Switch Momentum HUD icons; `true`: match by button letter |
 | `input_joycon_sideways` | `true` | Allow single Joy-Con sideways grip |
 | `banjo_renut_resolve_skip` | `true` | Skip redundant EDRAM resolves where target contents are already current |
@@ -129,8 +132,9 @@ To temporarily disable DLC loading without deleting your files (saves are unaffe
 
 ## Resolution and Performance
 
-- **Resolution:** Renders at **1280x720** in handheld mode (matching the native Xbox 360 resolution) and **1920x1080**
-  when docked.
+- **Resolution:** Renders up to **1280x720** in handheld mode (matching the native Xbox 360 resolution) and **1920x1080**
+  when docked, with adaptive dynamic resolution scaling (**486p–720p** handheld, **720p–1080p** docked) during heavy
+  GPU/CPU scenes when `banjo_renut_dynamic_resolution = true`.
 - **Frame Rate:** Targets the original game's **30 FPS cap** at stock Switch clocks:
 
 <div align="center">
@@ -171,8 +175,10 @@ Community guides:
   cooked `.xxx` packages are translated with [XenosRecomp](https://github.com/hedge-dev/XenosRecomp), DXC, and
   SPIRV-Cross into optimized deko3d GLSL (`deko3d_glsl.bin`) and precompiled with
   [uam](https://github.com/devkitPro/uam) into **26,394** native Maxwell shader binaries (`deko3d_shaders.bin`).
-- **Audio & CPU optimizations.** ARM64 NEON-vectorized audio resampling and packet decoding for Xbox 360 XMA voice
-  streams, fast AArch64 VMX estimates, single-mode FPCR float execution, and verified stack-slot vector forwarding.
+- **Audio, Physics & CPU optimizations.** ARM64 NEON-vectorized audio resampling, XMA voice packet decoding, FMOD
+  5.1/multi-channel mixing, and PhysX PGS constraint solvers, native `libmspack` LZX streaming decompression, `plume`
+  CPU/GPU heap reserve protection, fast AArch64 VMX estimates, single-mode FPCR float execution, and verified
+  stack-slot vector forwarding.
 
 ## Build
 

@@ -171,6 +171,15 @@ void ImGuiDrawer::RemoveDialog(ImGuiDialog* dialog) {
   DetachIfLastDialogRemoved();
 }
 
+bool ImGuiDrawer::WantsFrame() const {
+  for (const ImGuiDialog* dialog : dialogs_) {
+    if (dialog && dialog->WantsFrame()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ImGuiDrawer::Initialize() {
   // Setup ImGui internal state.
   // This will give us state we can swap to the ImGui globals when in use.
